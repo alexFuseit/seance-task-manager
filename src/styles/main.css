@@ -346,6 +346,9 @@ dialog.editor .dialog-actions {
 .view-toggle {
   font-size: 1rem;
 }
+.mute-toggle {
+  font-size: 0.95rem;
+}
 .view-notice {
   color: #c98a2b;
   font-style: italic;

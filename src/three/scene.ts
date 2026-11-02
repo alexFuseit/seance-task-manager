@@ -16,6 +16,12 @@ export interface SceneHandle {
   renderer: THREE.WebGLRenderer;
   controls: OrbitControls;
   graveyard: THREE.Group;
+  /** scene fog, exposed so the world module can scale density. */
+  fog: THREE.FogExp2;
+  /** primary moonlight directional light. */
+  moonLight: THREE.DirectionalLight;
+  /** hemisphere fill light. */
+  hemiLight: THREE.HemisphereLight;
   /** request a few active frames (e.g. after a store change or animation). */
   wake: () => void;
   /** register a per-frame callback; returns an unregister fn. */
@@ -30,7 +36,8 @@ export function createScene(container: HTMLElement): SceneHandle {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x0b0d12);
   // Moonlit fog — density tuned so distant graves fade into dusk.
-  scene.fog = new THREE.FogExp2(0x0b0d12, 0.035);
+  const fog = new THREE.FogExp2(0x0b0d12, 0.035);
+  scene.fog = fog;
 
   const camera = new THREE.PerspectiveCamera(
     55,
@@ -58,21 +65,21 @@ export function createScene(container: HTMLElement): SceneHandle {
   controls.target.set(0, 1, 0);
 
   // --- lighting ---
-  const moon = new THREE.DirectionalLight(0xaecbe6, 0.8);
-  moon.position.set(-6, 12, 4);
-  moon.castShadow = true;
-  moon.shadow.mapSize.set(1024, 1024);
-  moon.shadow.camera.near = 1;
-  moon.shadow.camera.far = 60;
+  const moonLight = new THREE.DirectionalLight(0xaecbe6, 0.8);
+  moonLight.position.set(-6, 12, 4);
+  moonLight.castShadow = true;
+  moonLight.shadow.mapSize.set(1024, 1024);
+  moonLight.shadow.camera.near = 1;
+  moonLight.shadow.camera.far = 60;
   const d = 25;
-  moon.shadow.camera.left = -d;
-  moon.shadow.camera.right = d;
-  moon.shadow.camera.top = d;
-  moon.shadow.camera.bottom = -d;
-  scene.add(moon);
+  moonLight.shadow.camera.left = -d;
+  moonLight.shadow.camera.right = d;
+  moonLight.shadow.camera.top = d;
+  moonLight.shadow.camera.bottom = -d;
+  scene.add(moonLight);
 
-  const ambient = new THREE.HemisphereLight(0x5a6b8c, 0x1a140e, 0.5);
-  scene.add(ambient);
+  const hemiLight = new THREE.HemisphereLight(0x5a6b8c, 0x1a140e, 0.5);
+  scene.add(hemiLight);
 
   // --- ground ---
   const groundGeo = new THREE.PlaneGeometry(200, 200);
@@ -169,5 +176,17 @@ export function createScene(container: HTMLElement): SceneHandle {
     renderer.domElement.remove();
   }
 
-  return { scene, camera, renderer, controls, graveyard, wake, onFrame, dispose };
+  return {
+    scene,
+    camera,
+    renderer,
+    controls,
+    graveyard,
+    fog,
+    moonLight,
+    hemiLight,
+    wake,
+    onFrame,
+    dispose,
+  };
 }

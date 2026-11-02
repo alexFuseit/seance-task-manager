@@ -28,6 +28,9 @@ import {
   tickGrave,
 } from './grave';
 import { createPlaque, type Plaque } from './plaque';
+import { type Effect, createGhost, createDustBurst } from './effects';
+
+type Transient = 'idle' | 'laying-to-rest' | 'exhuming';
 
 interface GraveEntry {
   taskId: string;
@@ -38,6 +41,12 @@ interface GraveEntry {
   rise: number;
   /** cached visual signature to skip redundant target recomputation. */
   sig: string;
+  /** current transient (signature-moment) animation, if any. */
+  transient: Transient;
+  /** progress 0..1 of the current transient animation. */
+  anim: number;
+  /** last-seen task status, to detect active→completed transitions. */
+  lastStatus: 'active' | 'completed';
 }
 
 export interface Reconciler {
@@ -46,6 +55,8 @@ export interface Reconciler {
 
 const RISE_SPEED = 2.2;
 const PLOT_SPACING = 2.6;
+const LAY_TO_REST_DUR = 1.6; // seconds — grave sinks + ghost rises
+const EXHUME_DUR = 1.1; // seconds — grave pulls up then crumbles
 
 /** Does the task match the (already-lowercased, non-empty) search term? */
 function taskMatches(task: Task, q: string): boolean {
@@ -61,6 +72,10 @@ export function createReconciler(
   opts: { reducedMotion: boolean },
 ): Reconciler {
   const entries = new Map<string, GraveEntry>();
+  /** entries playing their exhume animation before disposal. */
+  const exhuming = new Set<GraveEntry>();
+  /** transient particle/mesh effects (ghosts, dust) not tied to a grave entry. */
+  const effects = new Set<Effect>();
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
   let hovered: string | null = null;
@@ -104,6 +119,34 @@ export function createReconciler(
     );
   }
 
+  function spawnEffect(fx: Effect): void {
+    scene.scene.add(fx.object);
+    effects.add(fx);
+  }
+
+  function startLayToRest(entry: GraveEntry): void {
+    if (opts.reducedMotion) return; // instant state change under reduced motion
+    entry.transient = 'laying-to-rest';
+    entry.anim = 0;
+    const p = entry.parts.group.position;
+    spawnEffect(createGhost(new THREE.Vector3(p.x, 0.4, p.z)));
+  }
+
+  function startExhume(entry: GraveEntry): void {
+    entries.delete(entry.taskId);
+    if (hovered === entry.taskId) hideHover();
+    if (opts.reducedMotion) {
+      scene.graveyard.remove(entry.parts.group);
+      disposeGrave(entry.parts);
+      return;
+    }
+    entry.transient = 'exhuming';
+    entry.anim = 0;
+    exhuming.add(entry);
+    const p = entry.parts.group.position;
+    spawnEffect(createDustBurst(new THREE.Vector3(p.x, 0.3, p.z)));
+  }
+
   function reconcile(): void {
     const search = store.getState().view.filter.search;
     const tasks = store.getState().graveyardTasks();
@@ -126,6 +169,9 @@ export function createReconciler(
           target: pos.clone(),
           rise: 1,
           sig,
+          transient: 'idle',
+          anim: 0,
+          lastStatus: task.status,
         };
         if (opts.reducedMotion) {
           entry.rise = 1;
@@ -140,6 +186,11 @@ export function createReconciler(
           applyGraveVisual(existing.parts, visual);
           existing.sig = sig;
         }
+        // Detect the active→completed transition → lay to rest.
+        if (existing.lastStatus === 'active' && task.status === 'completed') {
+          startLayToRest(existing);
+        }
+        existing.lastStatus = task.status;
         existing.target.copy(pos);
         if (opts.reducedMotion) {
           existing.parts.group.position.x = pos.x;
@@ -148,12 +199,10 @@ export function createReconciler(
       }
     });
 
+    // Tasks gone from the store → exhume (deferred disposal) rather than snap.
     for (const [id, entry] of entries) {
       if (!seen.has(id)) {
-        scene.graveyard.remove(entry.parts.group);
-        disposeGrave(entry.parts);
-        entries.delete(id);
-        if (hovered === id) hideHover();
+        startExhume(entry);
       }
     }
     scene.wake();
@@ -171,6 +220,22 @@ export function createReconciler(
 
     for (const entry of entries.values()) {
       const g = entry.parts.group;
+
+      // Laying-to-rest: the grave sinks a little and its glow fades as the
+      // ghost (spawned at trigger) rises. Then it settles into completed look.
+      if (entry.transient === 'laying-to-rest') {
+        entry.anim = Math.min(1, entry.anim + dt / LAY_TO_REST_DUR);
+        const e = easeOut(entry.anim);
+        g.position.y = -0.35 * e;
+        entry.parts.stoneMaterial.emissiveIntensity =
+          entry.parts.targetEmissive * (1 - e);
+        anyActive = true;
+        if (entry.anim >= 1) {
+          entry.transient = 'idle';
+          g.position.y = 0;
+        }
+        continue; // skip rise/relayout while playing
+      }
 
       if (entry.rise < 1) {
         entry.rise = Math.min(1, entry.rise + dt * RISE_SPEED);
@@ -196,6 +261,40 @@ export function createReconciler(
       } else {
         // still settle materials instantly when reduced motion
         tickGrave(entry.parts, 1, elapsed);
+      }
+    }
+
+    // Exhuming graves: pull up out of the ground, then crumble (shrink+sink)
+    // before disposal. The dust burst is a separate effect spawned at trigger.
+    for (const entry of [...exhuming]) {
+      entry.anim = Math.min(1, entry.anim + dt / EXHUME_DUR);
+      const g = entry.parts.group;
+      const a = entry.anim;
+      if (a < 0.4) {
+        // pull up
+        g.position.y = (a / 0.4) * 0.6;
+      } else {
+        // crumble: drop and shrink to nothing
+        const c = (a - 0.4) / 0.6;
+        g.position.y = 0.6 - c * 1.4;
+        g.scale.setScalar(Math.max(0.001, 1 - c));
+      }
+      anyActive = true;
+      if (entry.anim >= 1) {
+        scene.graveyard.remove(entry.parts.group);
+        disposeGrave(entry.parts);
+        exhuming.delete(entry);
+      }
+    }
+
+    // Transient effects (ghosts, dust).
+    for (const fx of [...effects]) {
+      fx.update(dt);
+      anyActive = true;
+      if (fx.done()) {
+        scene.scene.remove(fx.object);
+        fx.dispose();
+        effects.delete(fx);
       }
     }
 
@@ -289,6 +388,16 @@ export function createReconciler(
       disposeGrave(entry.parts);
     }
     entries.clear();
+    for (const entry of exhuming) {
+      scene.graveyard.remove(entry.parts.group);
+      disposeGrave(entry.parts);
+    }
+    exhuming.clear();
+    for (const fx of effects) {
+      scene.scene.remove(fx.object);
+      fx.dispose();
+    }
+    effects.clear();
     scene.scene.remove(plaque.sprite);
     plaque.dispose();
   }

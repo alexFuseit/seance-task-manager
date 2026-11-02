@@ -12,15 +12,17 @@ import { type SeanceStore } from '../store/task-store';
 import { mountLedger, type LedgerHandle } from './ledger';
 import { el } from './dom';
 import { isWebGLAvailable } from '../three/webgl';
+import { createAmbientAudio } from '../audio/ambient';
 import type { SceneHandle } from '../three/scene';
 import type { Reconciler } from '../three/grave-reconciler';
+import type { World } from '../three/world';
 
 type View = 'graveyard' | 'ledger';
 
 export function mountApp(parent: HTMLElement, store: SeanceStore): () => void {
   const webgl = isWebGLAvailable();
 
-  // --- top bar with the view toggle ---
+  // --- top bar with the view toggle + mute toggle ---
   const toggleBtn = el('button', {
     type: 'button',
     class: 'primary view-toggle',
@@ -29,8 +31,31 @@ export function mountApp(parent: HTMLElement, store: SeanceStore): () => void {
 
   const notice = el('span', { class: 'view-notice' });
 
-  const topbar = el('div', { class: 'topbar', role: 'toolbar', 'aria-label': 'View' }, [
+  // Ambient audio — default muted, gesture-gated (Requirement 5.4).
+  const audio = createAmbientAudio();
+  const muteBtn = el('button', {
+    type: 'button',
+    class: 'ghost mute-toggle',
+    'aria-pressed': 'false',
+  }) as HTMLButtonElement;
+
+  function syncMuteBtn(): void {
+    const on = audio.isEnabled();
+    muteBtn.setAttribute('aria-pressed', String(on));
+    muteBtn.textContent = on ? '🔊 Sound on' : '🔇 Sound off';
+  }
+  syncMuteBtn();
+
+  muteBtn.addEventListener('click', () => {
+    void audio.toggle().then((on) => {
+      store.getState().updateSettings({ muted: !on });
+      syncMuteBtn();
+    });
+  });
+
+  const topbar = el('div', { class: 'topbar', role: 'toolbar', 'aria-label': 'View and sound' }, [
     toggleBtn,
+    muteBtn,
     notice,
   ]);
   parent.append(topbar);
@@ -46,13 +71,15 @@ export function mountApp(parent: HTMLElement, store: SeanceStore): () => void {
   let view: View = 'ledger';
   let scene: SceneHandle | null = null;
   let reconciler: Reconciler | null = null;
+  let world: World | null = null;
 
   async function ensureScene(): Promise<void> {
     if (scene) return;
     // Lazy-load the Three.js layer so the ledger-only path never downloads it.
-    const [{ createScene }, { createReconciler }] = await Promise.all([
+    const [{ createScene }, { createReconciler }, { createWorld }] = await Promise.all([
       import('../three/scene'),
       import('../three/grave-reconciler'),
+      import('../three/world'),
     ]);
     if (scene) return; // guard against double-trigger while awaiting
     scene = createScene(canvasHost);
@@ -65,6 +92,19 @@ export function mountApp(parent: HTMLElement, store: SeanceStore): () => void {
       },
       { reducedMotion: store.getState().settings.reducedMotion },
     );
+    // World atmosphere: day/night, fog, blood moon — updated each frame.
+    world = createWorld({
+      scene: scene.scene,
+      fog: scene.fog,
+      moonLight: scene.moonLight,
+      hemiLight: scene.hemiLight,
+    });
+    const w = world;
+    const s = scene;
+    s.onFrame((dt) => {
+      w.update(store, dt);
+      s.wake(); // atmosphere eases continuously while in view
+    });
   }
 
   async function setView(next: View): Promise<void> {
@@ -105,7 +145,9 @@ export function mountApp(parent: HTMLElement, store: SeanceStore): () => void {
 
   return function dispose(): void {
     reconciler?.dispose();
+    world?.dispose();
     scene?.dispose();
+    audio.dispose();
     ledger.unsubscribe();
     topbar.remove();
     canvasHost.remove();
