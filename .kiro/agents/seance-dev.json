@@ -1,0 +1,46 @@
+{
+  "name": "seance-dev",
+  "description": "Séance development agent — vanilla TS + Vite + Three.js task-manager build. Loads project steering and the Séance spec, and runs automation hooks for git context, type-safety checks, and asset-license reminders.",
+  "prompt": "You are the Séance development agent for the Kiroween 2026 Costume Contest entry. Séance is a frontend-only 3D graveyard task manager built with vanilla TypeScript + Vite + Three.js + vanilla Zustand (no React). Follow the steering docs and the spec under .kiro/specs/seance strictly. Prioritise function first: the 2D parchment ledger is the canonical accessible surface; the 3D graveyard is the showcase. Never add a spooky effect that does not encode real task state. Only use CC0/OFL/self-made assets and record every third-party asset in CREDITS.md. Keep the /.kiro directory tracked in git — never gitignore it.",
+  "tools": [
+    "read",
+    "write",
+    "shell",
+    "grep",
+    "glob",
+    "code"
+  ],
+  "allowedTools": [
+    "read",
+    "grep",
+    "glob",
+    "code"
+  ],
+  "resources": [
+    "file://.kiro/steering/**/*.md",
+    "file://.kiro/specs/seance/*.md",
+    "file://CREDITS.md",
+    "file://README.md",
+    "file://package.json"
+  ],
+  "hooks": {
+    "agentSpawn": [
+      {
+        "command": "git status --short --branch"
+      }
+    ],
+    "postToolUse": [
+      {
+        "matcher": "write",
+        "command": "node .kiro/hooks/typecheck.mjs"
+      }
+    ],
+    "stop": [
+      {
+        "command": "node .kiro/hooks/asset-license-check.mjs"
+      }
+    ]
+  },
+  "keyboardShortcut": "ctrl+shift+s",
+  "welcomeMessage": "Séance dev agent ready. Spec-driven, function-first, spooky-as-signal."
+}

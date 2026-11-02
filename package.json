@@ -1,0 +1,23 @@
+{
+  "name": "seance",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Séance — a 3D graveyard task manager (Kiroween 2026 Costume Contest entry).",
+  "license": "MIT",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "zustand": "4.5.5"
+  },
+  "devDependencies": {
+    "typescript": "5.5.4",
+    "vite": "5.4.8",
+    "vitest": "2.1.2"
+  }
+}
