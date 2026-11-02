@@ -63,7 +63,18 @@ function toDateInput(iso?: string): string {
   return d.toISOString().slice(0, 10);
 }
 
-export function mountLedger(root: HTMLElement, store: SeanceStore): () => void {
+export interface LedgerHandle {
+  /** The ledger's root element (so a view toggle can show/hide it). */
+  element: HTMLElement;
+  /** Open the edit dialog for a task — also used by the 3D click-to-select. */
+  openEditor: (taskId: string) => void;
+  /** Stop subscribing and tear down. */
+  unsubscribe: () => void;
+}
+
+export function mountLedger(parent: HTMLElement, store: SeanceStore): LedgerHandle {
+  const root = el('div', { class: 'ledger-view' });
+  parent.append(root);
   // --- static shell -------------------------------------------------------
   const skip = el('a', { class: 'skip-link', href: '#ledger-table' }, [
     'Skip to task ledger',
@@ -315,7 +326,7 @@ export function mountLedger(root: HTMLElement, store: SeanceStore): () => void {
 
   renderAll();
   const unsubscribe = store.subscribe(renderAll);
-  return unsubscribe;
+  return { element: root, openEditor: editor.open, unsubscribe };
 }
 
 function renderRow(

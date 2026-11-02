@@ -335,3 +335,34 @@ dialog.editor .dialog-actions {
     transition: none !important;
   }
 }
+
+/* View toggle topbar */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+.view-toggle {
+  font-size: 1rem;
+}
+.view-notice {
+  color: #c98a2b;
+  font-style: italic;
+  font-size: 0.85rem;
+}
+
+/* 3D canvas host */
+.canvas-host {
+  width: 100%;
+  height: min(70vh, 640px);
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  overflow: hidden;
+  background: #0b0d12;
+}
+.canvas-host canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}

@@ -19,7 +19,8 @@ data persists to `localStorage` and the app ships as a static bundle.
 
 ## Status
 
-Scaffolding stage. The planning artifacts live under [`.kiro/`](./.kiro/):
+**M1 (functional 2D ledger) and M2 (graveyard MVP) complete.** The planning
+artifacts live under [`.kiro/`](./.kiro/):
 - Spec: [`.kiro/specs/seance/`](./.kiro/specs/seance/) — `requirements.md`, `design.md`, `tasks.md`.
 - Steering: [`.kiro/steering/`](./.kiro/steering/) — `product.md`, `tech.md`, `structure.md`.
 - Automation: [`.kiro/agents/seance-dev.json`](./.kiro/agents/seance-dev.json) + [`.kiro/hooks/`](./.kiro/hooks/).

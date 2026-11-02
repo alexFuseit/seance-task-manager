@@ -6,7 +6,7 @@
  */
 import './styles/main.css';
 import { createSeanceStore } from './store/task-store';
-import { mountLedger } from './ui/ledger';
+import { mountApp } from './ui/app';
 
 const root = document.querySelector<HTMLDivElement>('#app');
 if (!root) {
@@ -25,4 +25,4 @@ if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
   });
 }
 
-mountLedger(root, store);
+mountApp(root, store);

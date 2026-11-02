@@ -20,7 +20,7 @@ and AI-generated assets (unless the rules explicitly permit, in which case discl
 ## Code & libraries
 | Name | Source | License | Notes |
 |------|--------|---------|-------|
-| Three.js | https://github.com/mrdoob/three.js | MIT | 3D rendering |
+| Three.js | https://github.com/mrdoob/three.js | MIT | 3D rendering (v0.169.0) |
 | Zustand (vanilla) | https://github.com/pmndrs/zustand | MIT | State store |
 | Vite | https://github.com/vitejs/vite | MIT | Build/dev tooling |
 
