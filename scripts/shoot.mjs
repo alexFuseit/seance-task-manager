@@ -49,11 +49,21 @@ const enter = page.getByRole('button', { name: /enter the graveyard/i });
 await enter.click();
 // Wait for the lazy three chunk + scene mount + rise cascade.
 await page.waitForTimeout(2500);
-await page.screenshot({ path: `${OUT}/02-graveyard.png` });
+await page.screenshot({ path: `${OUT}/02-graveyard-high.png` });
 
 // Let overdue crows/spirit animate a bit, capture a second frame.
 await page.waitForTimeout(1500);
 await page.screenshot({ path: `${OUT}/03-graveyard-later.png` });
+
+// Switch to Low quality (no post-fx, no shadows, no decorations).
+await page.selectOption('.quality-select', 'low');
+await page.waitForTimeout(1200);
+await page.screenshot({ path: `${OUT}/04-graveyard-low.png` });
+
+// Back to High to confirm post-fx (bloom + vignette) returns.
+await page.selectOption('.quality-select', 'high');
+await page.waitForTimeout(1500);
+await page.screenshot({ path: `${OUT}/05-graveyard-high-again.png` });
 
 // Canvas pixel sanity: is anything non-black being drawn?
 const canvasInfo = await page.evaluate(() => {

@@ -49,6 +49,10 @@ export interface GraveParts {
   targetScale: number; // overall marker scale (dim-by-scale avoided; used for completed)
   /** phase offset so effects don't all tick in unison. */
   phase: number;
+  /** what decorations the current state *wants* (before LOD/quality gating). */
+  wantsCrow: boolean;
+  wantsFlock: boolean;
+  wantsSpirit: boolean;
 }
 
 const STONE_COLOR = new THREE.Color(0xb4b4bc);
@@ -193,6 +197,9 @@ export function buildGrave(visual: GraveVisual): GraveParts {
     targetMoss: 0,
     targetScale: 1,
     phase: Math.random() * Math.PI * 2,
+    wantsCrow: false,
+    wantsFlock: false,
+    wantsSpirit: false,
   };
 
   applyGraveVisual(parts, visual);
@@ -234,9 +241,13 @@ export function applyGraveVisual(parts: GraveParts, visual: GraveVisual): void {
   crackMat.opacity =
     completed ? 0 : visual.due === 'overdue' ? 0.9 : visual.due === 'soon' ? 0.5 : 0;
 
-  // Decorative objects.
+  // Decorative objects — record INTENT; the reconciler applies LOD/quality
+  // gating to decide final visibility.
   const dueSoon = !completed && visual.due === 'soon';
   const overdue = !completed && visual.due === 'overdue';
+  parts.wantsCrow = dueSoon;
+  parts.wantsFlock = overdue;
+  parts.wantsSpirit = overdue;
   parts.crow.visible = dueSoon;
   parts.crowFlock.visible = overdue;
   parts.spirit.visible = overdue;

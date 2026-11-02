@@ -71,8 +71,13 @@ export function createReconciler(
   scene: SceneHandle,
   store: SeanceStore,
   onSelect: (taskId: string) => void,
-  opts: { reducedMotion: boolean },
+  getOpts: () => { reducedMotion: boolean },
 ): Reconciler {
+  const opts = {
+    get reducedMotion() {
+      return getOpts().reducedMotion;
+    },
+  };
   const entries = new Map<string, GraveEntry>();
   /** entries playing their exhume animation before disposal. */
   const exhuming = new Set<GraveEntry>();
@@ -226,8 +231,27 @@ export function createReconciler(
     elapsed += dt;
     let anyActive = false;
 
+    // Decoration gating (Requirement 6 LOD): the quality tier may disable
+    // decorations entirely, and even when enabled we only decorate the nearest
+    // N graves so a large/distant backlog stays cheap.
+    const cfg = scene.config;
+    const decorEligible = new Set<string>();
+    // Reduced motion suppresses continuous decorative motion entirely.
+    if (!opts.reducedMotion && cfg.decorations && cfg.maxDecoratedGraves > 0) {
+      const byDistance = [...entries.values()]
+        .map((e) => ({
+          id: e.taskId,
+          d: e.parts.group.position.distanceToSquared(scene.camera.position),
+        }))
+        .sort((a, b) => a.d - b.d)
+        .slice(0, cfg.maxDecoratedGraves);
+      for (const { id } of byDistance) decorEligible.add(id);
+    }
+
     for (const entry of entries.values()) {
       const g = entry.parts.group;
+      // Apply decoration gating: hide crow/flock/spirit on ineligible graves.
+      setDecorationsEnabled(entry, decorEligible.has(entry.taskId));
 
       // Laying-to-rest: the grave sinks a little and its glow fades as the
       // ghost (spawned at trigger) rises. Then it settles into completed look.
@@ -421,4 +445,12 @@ export function createReconciler(
 
 function easeOut(t: number): number {
   return 1 - Math.pow(1 - t, 3);
+}
+
+/** Apply decoration intent subject to LOD/quality eligibility. */
+function setDecorationsEnabled(entry: GraveEntry, eligible: boolean): void {
+  const p = entry.parts;
+  p.crow.visible = eligible && p.wantsCrow;
+  p.crowFlock.visible = eligible && p.wantsFlock;
+  p.spirit.visible = eligible && p.wantsSpirit;
 }

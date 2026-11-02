@@ -263,11 +263,11 @@ table.ledger {
   background: var(--low);
 }
 .due.overdue {
-  color: var(--overdue);
+  color: #8e1f12;
   font-weight: 700;
 }
 .due.soon {
-  color: #a9701f;
+  color: #7a4e12;
   font-weight: 700;
 }
 
@@ -348,6 +348,19 @@ dialog.editor .dialog-actions {
 }
 .mute-toggle {
   font-size: 0.95rem;
+}
+.quality-select {
+  font-size: 0.9rem;
+}
+.reduced-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.9rem;
+  color: #d8c9a6;
+}
+.topbar {
+  flex-wrap: wrap;
 }
 .view-notice {
   color: #c98a2b;

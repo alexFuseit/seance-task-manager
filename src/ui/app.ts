@@ -9,6 +9,7 @@
  * never leaves the ledger pays no WebGL cost.
  */
 import { type SeanceStore } from '../store/task-store';
+import { type Quality } from '../model/types';
 import { mountLedger, type LedgerHandle } from './ledger';
 import { el } from './dom';
 import { isWebGLAvailable } from '../three/webgl';
@@ -53,9 +54,33 @@ export function mountApp(parent: HTMLElement, store: SeanceStore): () => void {
     });
   });
 
-  const topbar = el('div', { class: 'topbar', role: 'toolbar', 'aria-label': 'View and sound' }, [
+  // Quality tier select (Requirement 6.2).
+  const qualitySelect = el('select', { class: 'quality-select', 'aria-label': 'Graphics quality' }, [
+    el('option', { value: 'high' }, ['Quality: High']),
+    el('option', { value: 'medium' }, ['Quality: Medium']),
+    el('option', { value: 'low' }, ['Quality: Low']),
+  ]) as HTMLSelectElement;
+  qualitySelect.value = store.getState().settings.quality;
+  qualitySelect.addEventListener('change', () => {
+    store.getState().updateSettings({ quality: qualitySelect.value as Quality });
+  });
+
+  // Reduced-motion toggle (Requirement 7.2) — reflects and overrides the OS pref.
+  const reducedCb = el('input', { type: 'checkbox', id: 'reduced-motion' }) as HTMLInputElement;
+  reducedCb.checked = store.getState().settings.reducedMotion;
+  reducedCb.addEventListener('change', () => {
+    store.getState().updateSettings({ reducedMotion: reducedCb.checked });
+  });
+  const reducedLabel = el('label', { for: 'reduced-motion', class: 'reduced-label' }, [
+    reducedCb,
+    ' Reduce motion',
+  ]);
+
+  const topbar = el('div', { class: 'topbar', role: 'toolbar', 'aria-label': 'View, sound and quality' }, [
     toggleBtn,
     muteBtn,
+    qualitySelect,
+    reducedLabel,
     notice,
   ]);
   parent.append(topbar);
@@ -72,17 +97,20 @@ export function mountApp(parent: HTMLElement, store: SeanceStore): () => void {
   let scene: SceneHandle | null = null;
   let reconciler: Reconciler | null = null;
   let world: World | null = null;
+  let lastQuality = store.getState().settings.quality;
 
   async function ensureScene(): Promise<void> {
     if (scene) return;
     // Lazy-load the Three.js layer so the ledger-only path never downloads it.
-    const [{ createScene }, { createReconciler }, { createWorld }] = await Promise.all([
-      import('../three/scene'),
-      import('../three/grave-reconciler'),
-      import('../three/world'),
-    ]);
+    const [{ createScene }, { createReconciler }, { createWorld }, { configForQuality }] =
+      await Promise.all([
+        import('../three/scene'),
+        import('../three/grave-reconciler'),
+        import('../three/world'),
+        import('../three/quality'),
+      ]);
     if (scene) return; // guard against double-trigger while awaiting
-    scene = createScene(canvasHost);
+    scene = createScene(canvasHost, configForQuality(store.getState().settings.quality));
     reconciler = createReconciler(
       scene,
       store,
@@ -90,7 +118,8 @@ export function mountApp(parent: HTMLElement, store: SeanceStore): () => void {
         // Click-to-select in 3D opens the ledger's edit dialog.
         ledger.openEditor(taskId);
       },
-      { reducedMotion: store.getState().settings.reducedMotion },
+      // Read reduced-motion live so a runtime toggle takes effect.
+      () => ({ reducedMotion: store.getState().settings.reducedMotion }),
     );
     // World atmosphere: day/night, fog, blood moon — updated each frame.
     world = createWorld({
@@ -104,6 +133,16 @@ export function mountApp(parent: HTMLElement, store: SeanceStore): () => void {
     s.onFrame((dt) => {
       w.update(store, dt);
       s.wake(); // atmosphere eases continuously while in view
+    });
+
+    // React to quality changes at runtime.
+    void import('../three/quality').then(({ configForQuality: cfg }) => {
+      store.subscribe((state) => {
+        if (state.settings.quality !== lastQuality) {
+          lastQuality = state.settings.quality;
+          scene?.applyConfig(cfg(state.settings.quality));
+        }
+      });
     });
   }
 
@@ -141,9 +180,21 @@ export function mountApp(parent: HTMLElement, store: SeanceStore): () => void {
       'WebGL is unavailable in this browser — showing the accessible ledger.';
   }
 
+  // Keep the topbar controls in sync with the store (e.g. the OS reduced-motion
+  // media query can flip the setting at runtime).
+  const unsyncControls = store.subscribe((state) => {
+    if (qualitySelect.value !== state.settings.quality) {
+      qualitySelect.value = state.settings.quality;
+    }
+    if (reducedCb.checked !== state.settings.reducedMotion) {
+      reducedCb.checked = state.settings.reducedMotion;
+    }
+  });
+
   void setView('ledger');
 
   return function dispose(): void {
+    unsyncControls();
     reconciler?.dispose();
     world?.dispose();
     scene?.dispose();

@@ -11,6 +11,7 @@ import {
 } from '../model/query';
 import { createSeanceStore } from '../store/task-store';
 import { seedIfEmpty } from '../store/seed';
+import { configForQuality } from '../three/quality';
 import { emptyState, type Task } from '../model/types';
 
 const HOUR = 60 * 60 * 1000;
@@ -228,5 +229,24 @@ describe('seedIfEmpty', () => {
     store.getState().addTask({ title: 'Existing' });
     seedIfEmpty(store);
     expect(store.getState().tasks).toHaveLength(1);
+  });
+});
+
+describe('quality tiers', () => {
+  it('low disables post-fx, shadows, and decorations', () => {
+    const low = configForQuality('low');
+    expect(low.postFx).toBe(false);
+    expect(low.shadows).toBe(false);
+    expect(low.decorations).toBe(false);
+    expect(low.maxPixelRatio).toBe(1);
+  });
+
+  it('high enables everything with the largest budgets', () => {
+    const high = configForQuality('high');
+    const medium = configForQuality('medium');
+    expect(high.postFx).toBe(true);
+    expect(high.shadows).toBe(true);
+    expect(high.maxDecoratedGraves).toBeGreaterThan(medium.maxDecoratedGraves);
+    expect(high.shadowMapSize).toBeGreaterThanOrEqual(medium.shadowMapSize);
   });
 });

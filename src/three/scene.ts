@@ -9,6 +9,8 @@
  */
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { type RenderConfig } from './quality';
+import { createPostFx, type PostFx } from './postfx';
 
 export interface SceneHandle {
   scene: THREE.Scene;
@@ -22,6 +24,10 @@ export interface SceneHandle {
   moonLight: THREE.DirectionalLight;
   /** hemisphere fill light. */
   hemiLight: THREE.HemisphereLight;
+  /** the currently-applied render config (quality tier). */
+  config: RenderConfig;
+  /** apply a new render config at runtime (quality switch). */
+  applyConfig: (cfg: RenderConfig) => void;
   /** request a few active frames (e.g. after a store change or animation). */
   wake: () => void;
   /** register a per-frame callback; returns an unregister fn. */
@@ -32,7 +38,7 @@ export interface SceneHandle {
 const IDLE_FPS = 8;
 const ACTIVE_MS = 1200; // keep rendering at full rate this long after a wake
 
-export function createScene(container: HTMLElement): SceneHandle {
+export function createScene(container: HTMLElement, initialConfig: RenderConfig): SceneHandle {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x0b0d12);
   // Moonlit fog — density tuned so distant graves fade into dusk.
@@ -49,9 +55,9 @@ export function createScene(container: HTMLElement): SceneHandle {
   camera.position.set(1.5, 2.4, 8.5);
 
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, initialConfig.maxPixelRatio));
   renderer.setSize(container.clientWidth, container.clientHeight);
-  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.enabled = initialConfig.shadows;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   container.appendChild(renderer.domElement);
   renderer.domElement.setAttribute('aria-hidden', 'true');
@@ -68,7 +74,7 @@ export function createScene(container: HTMLElement): SceneHandle {
   const moonLight = new THREE.DirectionalLight(0xbcd4f0, 1.4);
   moonLight.position.set(-6, 12, 4);
   moonLight.castShadow = true;
-  moonLight.shadow.mapSize.set(1024, 1024);
+  moonLight.shadow.mapSize.set(initialConfig.shadowMapSize, initialConfig.shadowMapSize);
   moonLight.shadow.camera.near = 1;
   moonLight.shadow.camera.far = 60;
   const d = 25;
@@ -96,6 +102,25 @@ export function createScene(container: HTMLElement): SceneHandle {
   // Container group for graves so the reconciler has a stable parent.
   const graveyard = new THREE.Group();
   scene.add(graveyard);
+
+  // --- post-processing (lazy; only when the tier enables it) ---
+  let config: RenderConfig = initialConfig;
+  let postfx: PostFx | null = null;
+
+  function ensurePostFx(): void {
+    if (postfx || !config.postFx) return;
+    postfx = createPostFx(renderer, scene, camera, { bloomStrength: config.bloomStrength });
+    sizePostFx();
+  }
+
+  function sizePostFx(): void {
+    if (!postfx) return;
+    const w = container.clientWidth;
+    const h = Math.max(1, container.clientHeight);
+    postfx.setSize(w, h, Math.min(window.devicePixelRatio, config.maxPixelRatio));
+  }
+
+  ensurePostFx();
 
   // --- render loop with idle throttling + tab-visibility pause ---
   const frameCbs = new Set<(dt: number) => void>();
@@ -133,7 +158,11 @@ export function createScene(container: HTMLElement): SceneHandle {
     const dt = clock.getDelta();
     controls.update();
     for (const cb of frameCbs) cb(dt);
-    renderer.render(scene, camera);
+    if (postfx && config.postFx) {
+      postfx.render();
+    } else {
+      renderer.render(scene, camera);
+    }
   }
 
   function onVisibility(): void {
@@ -156,6 +185,7 @@ export function createScene(container: HTMLElement): SceneHandle {
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
     renderer.setSize(w, h);
+    sizePostFx();
     wake();
   }
   const resizeObserver = new ResizeObserver(onResize);
@@ -168,11 +198,41 @@ export function createScene(container: HTMLElement): SceneHandle {
     return () => frameCbs.delete(cb);
   }
 
+  function applyConfig(cfg: RenderConfig): void {
+    config = cfg;
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, cfg.maxPixelRatio));
+    renderer.shadowMap.enabled = cfg.shadows;
+    moonLight.castShadow = cfg.shadows;
+    if (moonLight.shadow.mapSize.width !== cfg.shadowMapSize) {
+      moonLight.shadow.mapSize.set(cfg.shadowMapSize, cfg.shadowMapSize);
+      // force shadow map rebuild at the new resolution
+      moonLight.shadow.map?.dispose();
+      moonLight.shadow.map = null;
+    }
+    if (cfg.postFx) {
+      if (!postfx) ensurePostFx();
+      else sizePostFx();
+    } else if (postfx) {
+      postfx.dispose();
+      postfx = null;
+    }
+    // materials need re-render after shadow toggle
+    scene.traverse((o) => {
+      if (o instanceof THREE.Mesh) {
+        const m = o.material;
+        if (Array.isArray(m)) m.forEach((x) => (x.needsUpdate = true));
+        else m.needsUpdate = true;
+      }
+    });
+    wake();
+  }
+
   function dispose(): void {
     running = false;
     if (rafId) cancelAnimationFrame(rafId);
     document.removeEventListener('visibilitychange', onVisibility);
     resizeObserver.disconnect();
+    postfx?.dispose();
     controls.dispose();
     renderer.dispose();
     groundGeo.dispose();
@@ -189,6 +249,10 @@ export function createScene(container: HTMLElement): SceneHandle {
     fog,
     moonLight,
     hemiLight,
+    get config() {
+      return config;
+    },
+    applyConfig,
     wake,
     onFrame,
     dispose,
