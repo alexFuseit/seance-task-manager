@@ -192,4 +192,21 @@ describe('task store', () => {
     const visible = store.getState().visibleTasks();
     expect(visible.map((t) => t.id)).toEqual([a.id]);
   });
+
+  it('graveyardTasks ignores the search term (dim-not-filter) but honors other filters', () => {
+    store.getState().addTask({ title: 'Haunted house' });
+    store.getState().addTask({ title: 'Mow the lawn' });
+    store.getState().setFilter({ search: 'haunt' });
+
+    // Ledger filters by search → only the match is visible.
+    expect(store.getState().visibleTasks()).toHaveLength(1);
+    // Graveyard keeps both (search becomes a highlight, not a filter).
+    expect(store.getState().graveyardTasks()).toHaveLength(2);
+
+    // A non-search filter still applies to the graveyard set.
+    const b = store.getState().addTask({ title: 'Done one' });
+    store.getState().completeTask(b.id);
+    store.getState().updateSettings({ showCompleted: false });
+    expect(store.getState().graveyardTasks().some((t) => t.id === b.id)).toBe(false);
+  });
 });

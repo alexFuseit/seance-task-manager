@@ -66,6 +66,12 @@ export interface SeanceState extends AppState {
 
   // --- derived ---
   visibleTasks: () => Task[];
+  /**
+   * Like visibleTasks but WITHOUT the search filter applied — the 3D graveyard
+   * dims non-matching graves rather than hiding them (Requirement 4.8), so it
+   * needs the full filtered-but-not-searched set.
+   */
+  graveyardTasks: () => Task[];
 }
 
 /** Pick an unoccupied-ish plot on a simple spiral so graves don't all stack. */
@@ -201,6 +207,16 @@ export function createSeanceStore(initial: AppState = loadState()) {
         ? s.tasks
         : s.tasks.filter((t) => t.status !== 'completed');
       return queryTasks(base, s.view.filter, s.view.sortKey, s.view.sortDir);
+    },
+
+    graveyardTasks() {
+      const s = get();
+      const base = s.settings.showCompleted
+        ? s.tasks
+        : s.tasks.filter((t) => t.status !== 'completed');
+      // Clear the search term so matches are highlighted (not filtered out).
+      const filter = { ...s.view.filter, search: '' };
+      return queryTasks(base, filter, s.view.sortKey, s.view.sortDir);
     },
   }));
 
