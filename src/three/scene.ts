@@ -45,8 +45,8 @@ export function createScene(container: HTMLElement): SceneHandle {
     0.1,
     200,
   );
-  // Low, moody framing near ground level looking slightly up.
-  camera.position.set(0, 2.2, 9);
+  // Low, moody framing near ground level looking slightly up at the stones.
+  camera.position.set(2.5, 1.8, 6);
 
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));

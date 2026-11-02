@@ -10,6 +10,7 @@ import {
   defaultFilter,
 } from '../model/query';
 import { createSeanceStore } from '../store/task-store';
+import { seedIfEmpty } from '../store/seed';
 import { emptyState, type Task } from '../model/types';
 
 const HOUR = 60 * 60 * 1000;
@@ -208,5 +209,24 @@ describe('task store', () => {
     store.getState().completeTask(b.id);
     store.getState().updateSettings({ showCompleted: false });
     expect(store.getState().graveyardTasks().some((t) => t.id === b.id)).toBe(false);
+  });
+});
+
+describe('seedIfEmpty', () => {
+  it('populates an empty store with sample graves', () => {
+    const store = createSeanceStore(emptyState());
+    seedIfEmpty(store);
+    const tasks = store.getState().tasks;
+    expect(tasks.length).toBeGreaterThan(0);
+    // covers active + completed states for the demo
+    expect(tasks.some((t) => t.status === 'active')).toBe(true);
+    expect(tasks.some((t) => t.status === 'completed')).toBe(true);
+  });
+
+  it('is a no-op when the store already has tasks', () => {
+    const store = createSeanceStore(emptyState());
+    store.getState().addTask({ title: 'Existing' });
+    seedIfEmpty(store);
+    expect(store.getState().tasks).toHaveLength(1);
   });
 });

@@ -67,7 +67,7 @@ export function createWorld(deps: WorldDeps): World {
     emissiveIntensity: 1.2,
   });
   const moon = new THREE.Mesh(new THREE.SphereGeometry(3, 24, 16), moonMat);
-  moon.position.set(-18, 22, -40);
+  moon.position.set(-14, 12, -38);
   deps.scene.add(moon);
 
   // Eased live values.

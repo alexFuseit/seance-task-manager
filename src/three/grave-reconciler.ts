@@ -45,6 +45,8 @@ interface GraveEntry {
   transient: Transient;
   /** progress 0..1 of the current transient animation. */
   anim: number;
+  /** seconds to wait before this grave starts rising (staggered entrance). */
+  riseDelay: number;
   /** last-seen task status, to detect active→completed transitions. */
   lastStatus: 'active' | 'completed';
 }
@@ -171,6 +173,7 @@ export function createReconciler(
           sig,
           transient: 'idle',
           anim: 0,
+          riseDelay: 0,
           lastStatus: task.status,
         };
         if (opts.reducedMotion) {
@@ -178,6 +181,9 @@ export function createReconciler(
           parts.group.position.set(pos.x, 0, pos.z);
         } else {
           entry.rise = 0;
+          // Stagger entrances so a populated yard rises as a cascade, capped
+          // so later graves don't wait too long.
+          entry.riseDelay = Math.min(index * 0.12, 1.2);
           parts.group.position.set(pos.x, -parts.height - 0.3, pos.z);
         }
         entries.set(task.id, entry);
@@ -238,9 +244,15 @@ export function createReconciler(
       }
 
       if (entry.rise < 1) {
-        entry.rise = Math.min(1, entry.rise + dt * RISE_SPEED);
-        g.position.y = -(entry.parts.height + 0.3) * (1 - easeOut(entry.rise));
-        anyActive = true;
+        if (entry.riseDelay > 0) {
+          entry.riseDelay -= dt;
+          g.position.y = -(entry.parts.height + 0.3);
+          anyActive = true;
+        } else {
+          entry.rise = Math.min(1, entry.rise + dt * RISE_SPEED);
+          g.position.y = -(entry.parts.height + 0.3) * (1 - easeOut(entry.rise));
+          anyActive = true;
+        }
       } else {
         g.position.y = 0;
       }
