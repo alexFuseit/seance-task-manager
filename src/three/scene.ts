@@ -46,7 +46,7 @@ export function createScene(container: HTMLElement): SceneHandle {
     200,
   );
   // Low, moody framing near ground level looking slightly up at the stones.
-  camera.position.set(2.5, 1.8, 6);
+  camera.position.set(1.5, 2.4, 8.5);
 
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -65,7 +65,7 @@ export function createScene(container: HTMLElement): SceneHandle {
   controls.target.set(0, 1, 0);
 
   // --- lighting ---
-  const moonLight = new THREE.DirectionalLight(0xaecbe6, 0.8);
+  const moonLight = new THREE.DirectionalLight(0xbcd4f0, 1.4);
   moonLight.position.set(-6, 12, 4);
   moonLight.castShadow = true;
   moonLight.shadow.mapSize.set(1024, 1024);
@@ -78,12 +78,16 @@ export function createScene(container: HTMLElement): SceneHandle {
   moonLight.shadow.camera.bottom = -d;
   scene.add(moonLight);
 
-  const hemiLight = new THREE.HemisphereLight(0x5a6b8c, 0x1a140e, 0.5);
+  // Overall base fill so the graveyard never goes pitch black.
+  const ambient = new THREE.AmbientLight(0x6b7a99, 0.55);
+  scene.add(ambient);
+
+  const hemiLight = new THREE.HemisphereLight(0x8097c0, 0x2a2018, 0.8);
   scene.add(hemiLight);
 
   // --- ground ---
   const groundGeo = new THREE.PlaneGeometry(200, 200);
-  const groundMat = new THREE.MeshStandardMaterial({ color: 0x2a2419, roughness: 1 });
+  const groundMat = new THREE.MeshStandardMaterial({ color: 0x3f3626, roughness: 1 });
   const ground = new THREE.Mesh(groundGeo, groundMat);
   ground.rotation.x = -Math.PI / 2;
   ground.receiveShadow = true;

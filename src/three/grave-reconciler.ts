@@ -56,7 +56,7 @@ export interface Reconciler {
 }
 
 const RISE_SPEED = 2.2;
-const PLOT_SPACING = 2.6;
+const PLOT_SPACING = 3.0;
 const LAY_TO_REST_DUR = 1.6; // seconds — grave sinks + ghost rises
 const EXHUME_DUR = 1.1; // seconds — grave pulls up then crumbles
 
@@ -108,17 +108,19 @@ export function createReconciler(
 
   /**
    * Compute a grave's plot from its index in the *sorted visible* list, laid
-   * out on a spiral. Using the sorted index means changing the sort order
-   * re-positions graves — and the per-frame easing animates the move (4.2/2.2).
+   * out as a centered grid in rows receding from the camera. Using the sorted
+   * index means changing the sort order re-positions graves — and the per-frame
+   * easing animates the move (4.2/2.2).
    */
   function layoutPosition(index: number): THREE.Vector3 {
-    const ring = Math.floor(Math.sqrt(index));
-    const idxInRing = index - ring * ring;
-    return new THREE.Vector3(
-      (idxInRing - ring) * PLOT_SPACING,
-      0,
-      -ring * PLOT_SPACING,
-    );
+    const perRow = 4;
+    const row = Math.floor(index / perRow);
+    const col = index % perRow;
+    // centre each row horizontally; stagger alternate rows for a natural feel
+    const offset = (row % 2) * (PLOT_SPACING / 2);
+    const x = (col - (perRow - 1) / 2) * PLOT_SPACING + offset;
+    const z = -row * PLOT_SPACING;
+    return new THREE.Vector3(x, 0, z);
   }
 
   function spawnEffect(fx: Effect): void {

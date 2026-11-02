@@ -51,15 +51,15 @@ export interface GraveParts {
   phase: number;
 }
 
-const STONE_COLOR = new THREE.Color(0x8a8a90);
-const MOSS_COLOR = new THREE.Color(0x53603f);
-const SOIL_COLOR = new THREE.Color(0x4a3f2e);
-const SOIL_DARK = new THREE.Color(0x3b3326);
+const STONE_COLOR = new THREE.Color(0xb4b4bc);
+const MOSS_COLOR = new THREE.Color(0x63703f);
+const SOIL_COLOR = new THREE.Color(0x5a4d38);
+const SOIL_DARK = new THREE.Color(0x45392a);
 
 const GLOW: Record<Priority, { color: number; intensity: number }> = {
-  high: { color: 0x9fdfe6, intensity: 0.9 },
-  medium: { color: 0xc8b06a, intensity: 0.45 },
-  low: { color: 0x8a8f7a, intensity: 0.2 },
+  high: { color: 0x9fdfe6, intensity: 1.6 },
+  medium: { color: 0xe0b86a, intensity: 0.8 },
+  low: { color: 0x9aa07a, intensity: 0.35 },
 };
 
 function stoneGeometry(priority: Priority): { geo: THREE.BufferGeometry; height: number } {
@@ -141,16 +141,16 @@ export function buildGrave(visual: GraveVisual): GraveParts {
   stoneMesh.castShadow = true;
   stoneMesh.receiveShadow = true;
 
-  // Crack overlay — thin dark lines on a plane hugging the stone face.
+  // Crack overlay — a thin dark fissure line hugging the stone face.
   const crackMat = new THREE.MeshBasicMaterial({
-    color: 0x15110c,
+    color: 0x0d0a06,
     transparent: true,
     opacity: 0,
     depthWrite: false,
   });
-  const crack = new THREE.Mesh(new THREE.PlaneGeometry(0.5, height * 0.8), crackMat);
-  crack.position.set(0.12, height * 0.5, 0.11);
-  crack.rotation.z = 0.5;
+  const crack = new THREE.Mesh(new THREE.PlaneGeometry(0.06, height * 0.6), crackMat);
+  crack.position.set(0.08, height * 0.5, 0.085);
+  crack.rotation.z = 0.35;
   stoneMesh.add(crack);
 
   const moundMaterial = new THREE.MeshStandardMaterial({

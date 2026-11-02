@@ -18,6 +18,11 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
+# Playwright dev-only screenshot output (the shoot.mjs script is kept)
+scripts/shots/
+test-results/
+playwright-report/
+
 # Editor / OS
 .vscode/*
 !.vscode/extensions.json

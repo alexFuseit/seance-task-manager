@@ -29,9 +29,10 @@ export interface World {
 
 const BLOOD_MOON_THRESHOLD = 3; // overdue tasks
 
-// Sky colours: dusk (calm) → midnight (tense).
-const DUSK_SKY = new THREE.Color(0x2a2740);
-const NIGHT_SKY = new THREE.Color(0x070910);
+// Sky colours: dusk (calm) → midnight (tense). Kept deep but not pitch-black
+// so the graveyard silhouette reads on video.
+const DUSK_SKY = new THREE.Color(0x3a3860);
+const NIGHT_SKY = new THREE.Color(0x14182e);
 const DUSK_MOON = new THREE.Color(0xaecbe6);
 const NIGHT_MOON = new THREE.Color(0x8fa8d8);
 const BLOOD = new THREE.Color(0xc0392b);
@@ -63,11 +64,11 @@ export function createWorld(deps: WorldDeps): World {
   // The moon mesh — emissive sphere high in the sky.
   const moonMat = new THREE.MeshStandardMaterial({
     color: 0xffffff,
-    emissive: new THREE.Color(0xdfe8ff),
-    emissiveIntensity: 1.2,
+    emissive: new THREE.Color(0xeef2ff),
+    emissiveIntensity: 2.2,
   });
-  const moon = new THREE.Mesh(new THREE.SphereGeometry(3, 24, 16), moonMat);
-  moon.position.set(-14, 12, -38);
+  const moon = new THREE.Mesh(new THREE.SphereGeometry(4, 32, 20), moonMat);
+  moon.position.set(-12, 13, -34);
   deps.scene.add(moon);
 
   // Eased live values.
@@ -96,12 +97,12 @@ export function createWorld(deps: WorldDeps): World {
     // Moon colour + glow: cool normally, red for blood moon.
     const moonColor = DUSK_MOON.clone().lerp(NIGHT_MOON, night).lerp(BLOOD, blood);
     (moon.material as THREE.MeshStandardMaterial).emissive.copy(moonColor);
-    (moon.material as THREE.MeshStandardMaterial).emissiveIntensity = 1.0 + blood * 0.8;
+    (moon.material as THREE.MeshStandardMaterial).emissiveIntensity = 2.2 + blood * 1.0;
 
     // Moonlight dims as night deepens, reddens on blood moon.
     deps.moonLight.color.copy(moonColor);
-    deps.moonLight.intensity = 0.8 - night * 0.35 + blood * 0.15;
-    deps.hemiLight.intensity = 0.5 - night * 0.25;
+    deps.moonLight.intensity = 1.4 - night * 0.4 + blood * 0.2;
+    deps.hemiLight.intensity = 0.8 - night * 0.2;
   }
 
   function dispose(): void {
