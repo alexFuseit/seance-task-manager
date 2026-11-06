@@ -12,13 +12,16 @@
  */
 import * as THREE from 'three';
 import { type SeanceStore } from '../store/task-store';
+import { type Sky } from './scene';
 import { countOverdue } from '../model/query';
 
 export interface WorldDeps {
   scene: THREE.Scene;
   fog: THREE.FogExp2;
   moonLight: THREE.DirectionalLight;
+  rimLight: THREE.DirectionalLight;
   hemiLight: THREE.HemisphereLight;
+  sky: Sky;
 }
 
 export interface World {
@@ -29,13 +32,29 @@ export interface World {
 
 const BLOOD_MOON_THRESHOLD = 3; // overdue tasks
 
-// Sky colours: dusk (calm) → midnight (tense). Kept deep but not pitch-black
-// so the graveyard silhouette reads on video.
-const DUSK_SKY = new THREE.Color(0x3a3860);
-const NIGHT_SKY = new THREE.Color(0x14182e);
-const DUSK_MOON = new THREE.Color(0xaecbe6);
-const NIGHT_MOON = new THREE.Color(0x8fa8d8);
+// --- Palette (researched graveyard / twilight scheme) ---------------------
+// The scene is a complementary split: a cool violet→teal sky with a WARM amber
+// horizon glow. Dusk is richer and more saturated; deep night pushes toward
+// raven-plum; a backlog tints everything toward blood vermilion.
+//
+// Sky dome has three bands: zenith (top), horizon glow, and below-horizon
+// (bottom). Dusk keeps a strong warm horizon so the frame never reads flat.
+const DUSK_TOP = new THREE.Color(0x2a1e52); // deep indigo-violet zenith
+const NIGHT_TOP = new THREE.Color(0x140e2a); // raven-plum midnight
+const DUSK_HORIZON = new THREE.Color(0xe08040); // warm amber dusk glow (stronger)
+const NIGHT_HORIZON = new THREE.Color(0x7a5a5e); // dusty warm-violet haze at night
+const DUSK_BOTTOM = new THREE.Color(0x3a2b4a); // muted plum ground haze
+const NIGHT_BOTTOM = new THREE.Color(0x1a1526);
 const BLOOD = new THREE.Color(0xc0392b);
+const BLOOD_HORIZON = new THREE.Color(0xe0562e); // molten vermilion band
+
+// Moon tints.
+const DUSK_MOON = new THREE.Color(0xffd9a0); // warm harvest moon at dusk
+const NIGHT_MOON = new THREE.Color(0xbcd2ff); // cold moon at midnight
+
+// Rim/accent light: warm amber at dusk, cools slightly but stays warm.
+const DUSK_RIM = new THREE.Color(0xffa24d);
+const NIGHT_RIM = new THREE.Color(0xd98a66);
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -66,10 +85,18 @@ export function createWorld(deps: WorldDeps): World {
     color: 0xffffff,
     emissive: new THREE.Color(0xeef2ff),
     emissiveIntensity: 2.2,
+    fog: false,
   });
   const moon = new THREE.Mesh(new THREE.SphereGeometry(4, 32, 20), moonMat);
   moon.position.set(-12, 13, -34);
   deps.scene.add(moon);
+
+  // Reusable scratch colours (avoid per-frame allocation).
+  const cTop = new THREE.Color();
+  const cHorizon = new THREE.Color();
+  const cBottom = new THREE.Color();
+  const cMoon = new THREE.Color();
+  const cRim = new THREE.Color();
 
   // Eased live values.
   let night = 0;
@@ -81,28 +108,42 @@ export function createWorld(deps: WorldDeps): World {
     const targetNight = nightness(store, now);
     const overdue = countOverdue(store.getState().tasks, now);
     const targetBlood = overdue >= BLOOD_MOON_THRESHOLD ? 1 : 0;
-    // Fog: base 0.03, +0.012 per overdue task, capped.
-    fogTarget = THREE.MathUtils.clamp(0.03 + overdue * 0.012, 0.03, 0.14);
+    // Fog: base 0.02, +0.008 per overdue task, capped so stones stay visible.
+    fogTarget = THREE.MathUtils.clamp(0.02 + overdue * 0.008, 0.02, 0.085);
 
     const k = Math.min(1, dt * 1.5);
     night += (targetNight - night) * k;
     blood += (targetBlood - blood) * k;
     deps.fog.density += (fogTarget - deps.fog.density) * k;
 
-    // Sky colour: dusk→night, then tinted toward blood.
-    const sky = DUSK_SKY.clone().lerp(NIGHT_SKY, night).lerp(BLOOD, blood * 0.5);
-    deps.scene.background = sky;
-    deps.fog.color.copy(sky);
+    // --- sky dome gradient: dusk → night, then tinted toward blood ---
+    cTop.copy(DUSK_TOP).lerp(NIGHT_TOP, night).lerp(BLOOD, blood * 0.35);
+    cHorizon.copy(DUSK_HORIZON).lerp(NIGHT_HORIZON, night).lerp(BLOOD_HORIZON, blood);
+    cBottom.copy(DUSK_BOTTOM).lerp(NIGHT_BOTTOM, night).lerp(BLOOD, blood * 0.25);
+    deps.sky.top.copy(cTop);
+    deps.sky.horizon.copy(cHorizon);
+    deps.sky.bottom.copy(cBottom);
+    deps.sky.sync();
 
-    // Moon colour + glow: cool normally, red for blood moon.
-    const moonColor = DUSK_MOON.clone().lerp(NIGHT_MOON, night).lerp(BLOOD, blood);
-    (moon.material as THREE.MeshStandardMaterial).emissive.copy(moonColor);
+    // Fog matches the horizon band so distant graves melt into the glow.
+    deps.fog.color.copy(cHorizon);
+
+    // Moon colour + glow: warm harvest at dusk → cold at midnight → red backlog.
+    cMoon.copy(DUSK_MOON).lerp(NIGHT_MOON, night).lerp(BLOOD, blood);
+    (moon.material as THREE.MeshStandardMaterial).emissive.copy(cMoon);
     (moon.material as THREE.MeshStandardMaterial).emissiveIntensity = 2.2 + blood * 1.0;
 
-    // Moonlight dims as night deepens, reddens on blood moon.
-    deps.moonLight.color.copy(moonColor);
-    deps.moonLight.intensity = 1.4 - night * 0.4 + blood * 0.2;
-    deps.hemiLight.intensity = 0.8 - night * 0.2;
+    // Moonlight: cool key light, dims a little as night deepens, reddens on blood.
+    deps.moonLight.color.copy(cMoon);
+    deps.moonLight.intensity = 1.9 - night * 0.35 + blood * 0.2;
+
+    // Warm rim/accent light — the complementary counterpoint. Strengthens a
+    // touch toward blood moon so silhouettes stay separated from the red sky.
+    cRim.copy(DUSK_RIM).lerp(NIGHT_RIM, night).lerp(BLOOD_HORIZON, blood * 0.6);
+    deps.rimLight.color.copy(cRim);
+    deps.rimLight.intensity = 1.0 + blood * 0.4;
+
+    deps.hemiLight.intensity = 1.05 - night * 0.2;
   }
 
   function dispose(): void {

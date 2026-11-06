@@ -15,6 +15,7 @@
  * search highlighting transition smoothly.
  */
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { type Priority, type Status } from '../model/types';
 import { type DueState } from '../model/query';
 
@@ -61,33 +62,98 @@ const SOIL_COLOR = new THREE.Color(0x5a4d38);
 const SOIL_DARK = new THREE.Color(0x45392a);
 
 const GLOW: Record<Priority, { color: number; intensity: number }> = {
-  high: { color: 0x9fdfe6, intensity: 1.6 },
-  medium: { color: 0xe0b86a, intensity: 0.8 },
-  low: { color: 0x9aa07a, intensity: 0.35 },
+  high: { color: 0x9fdfe6, intensity: 0.85 },
+  medium: { color: 0xe0b86a, intensity: 0.5 },
+  low: { color: 0x9aa07a, intensity: 0.25 },
 };
 
 function stoneGeometry(priority: Priority): { geo: THREE.BufferGeometry; height: number } {
   switch (priority) {
     case 'high': {
-      const height = 2.6;
-      const geo = new THREE.CylinderGeometry(0.05, 0.28, height, 4);
-      geo.rotateY(Math.PI / 4);
-      geo.translate(0, height / 2, 0);
+      // Tall tapered obelisk with a pyramidal cap — a proper monument
+      // silhouette rather than a thin spike.
+      const shaftH = 2.2;
+      const capH = 0.4;
+      const height = shaftH + capH;
+      // Slight taper: wider at the base (0.34) than under the cap (0.24).
+      const shaft = new THREE.BoxGeometry(0.34, shaftH, 0.34);
+      shaft.translate(0, shaftH / 2, 0);
+      taperBox(shaft, shaftH, 0.24 / 0.34);
+      // Four-sided pyramid cap.
+      const cap = new THREE.CylinderGeometry(0.001, 0.19, capH, 4);
+      cap.rotateY(Math.PI / 4);
+      cap.translate(0, shaftH + capH / 2, 0);
+      const geo = mergeGeometries([shaft, cap]);
+      shaft.dispose();
+      cap.dispose();
       return { geo, height };
     }
     case 'medium': {
-      const height = 1.4;
-      const geo = new THREE.BoxGeometry(1.0, height, 0.2);
-      geo.translate(0, height / 2, 0);
+      // Classic arched (round-top) headstone via an extruded 2D profile.
+      const height = 1.5;
+      const w = 0.95;
+      const half = w / 2;
+      const bodyH = height - half; // arch radius == half-width
+      const shape = new THREE.Shape();
+      shape.moveTo(-half, 0);
+      shape.lineTo(-half, bodyH);
+      shape.absarc(0, bodyH, half, Math.PI, 0, true); // semicircular top
+      shape.lineTo(half, 0);
+      shape.lineTo(-half, 0);
+      const geo = new THREE.ExtrudeGeometry(shape, {
+        depth: 0.2,
+        bevelEnabled: true,
+        bevelThickness: 0.03,
+        bevelSize: 0.03,
+        bevelSegments: 2,
+        curveSegments: 16,
+      });
+      geo.translate(0, 0, -0.1);
       return { geo, height };
     }
     case 'low': {
-      const height = 0.5;
-      const geo = new THREE.BoxGeometry(0.9, height, 0.16);
-      geo.translate(0, height / 2, 0);
+      // Small flat marker with a gently rounded top edge (bevelled slab).
+      const height = 0.55;
+      const w = 0.85;
+      const half = w / 2;
+      const shape = new THREE.Shape();
+      const r = 0.1;
+      shape.moveTo(-half, 0);
+      shape.lineTo(-half, height - r);
+      shape.quadraticCurveTo(-half, height, -half + r, height);
+      shape.lineTo(half - r, height);
+      shape.quadraticCurveTo(half, height, half, height - r);
+      shape.lineTo(half, 0);
+      shape.lineTo(-half, 0);
+      const geo = new THREE.ExtrudeGeometry(shape, {
+        depth: 0.16,
+        bevelEnabled: true,
+        bevelThickness: 0.02,
+        bevelSize: 0.02,
+        bevelSegments: 1,
+        curveSegments: 8,
+      });
+      geo.translate(0, 0, -0.08);
       return { geo, height };
     }
   }
+}
+
+/**
+ * Taper a vertically-extruded box: scale the X/Z of each vertex toward
+ * `topScale` based on its height (y in [0, h]). Gives a subtle obelisk taper.
+ */
+function taperBox(geo: THREE.BufferGeometry, h: number, topScale: number): void {
+  const pos = geo.attributes.position as THREE.BufferAttribute;
+  for (let i = 0; i < pos.count; i++) {
+    const y = pos.getY(i);
+    const t = THREE.MathUtils.clamp(y / h, 0, 1);
+    const s = THREE.MathUtils.lerp(1, topScale, t);
+    pos.setX(i, pos.getX(i) * s);
+    pos.setZ(i, pos.getZ(i) * s);
+  }
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
 }
 
 /** A tiny low-poly crow (body + head + beak + wings). */
@@ -161,8 +227,12 @@ export function buildGrave(visual: GraveVisual): GraveParts {
     color: SOIL_COLOR.clone(),
     roughness: 1,
   });
-  const mound = new THREE.Mesh(new THREE.CylinderGeometry(0.7, 0.85, 0.2, 16), moundMaterial);
-  mound.position.y = 0.1;
+  // Low soil dome (scaled hemisphere) rather than a flat disc, so each grave
+  // sits on a believable turned-earth mound.
+  const moundGeo = new THREE.SphereGeometry(0.78, 20, 10, 0, Math.PI * 2, 0, Math.PI / 2);
+  moundGeo.scale(1, 0.32, 1);
+  const mound = new THREE.Mesh(moundGeo, moundMaterial);
+  mound.position.y = 0.0;
   mound.receiveShadow = true;
 
   const crow = buildCrow();
@@ -222,7 +292,7 @@ export function applyGraveVisual(parts: GraveParts, visual: GraveVisual): void {
 
   // Glow target: dormant when completed; dimmed when a search excludes it;
   // boosted when it matches an active search.
-  let emissive = completed ? 0 : base.intensity * 0.3;
+  let emissive = completed ? 0 : base.intensity * 0.6;
   if (!completed && visual.searchActive) {
     emissive = visual.searchMatch ? base.intensity * 1.2 : base.intensity * 0.05;
   }

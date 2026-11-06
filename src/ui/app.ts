@@ -126,7 +126,9 @@ export function mountApp(parent: HTMLElement, store: SeanceStore): () => void {
       scene: scene.scene,
       fog: scene.fog,
       moonLight: scene.moonLight,
+      rimLight: scene.rimLight,
       hemiLight: scene.hemiLight,
+      sky: scene.sky,
     });
     const w = world;
     const s = scene;

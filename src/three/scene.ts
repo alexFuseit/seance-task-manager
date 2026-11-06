@@ -12,6 +12,79 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { type RenderConfig } from './quality';
 import { createPostFx, type PostFx } from './postfx';
 
+/**
+ * A large inward-facing sky dome with a vertical gradient (deep violet zenith →
+ * warmer teal/amber horizon). A flat background colour is the biggest "dull"
+ * tell for a night scene; a gradient adds depth and a horizon glow for free.
+ * The world module drives `top`/`bottom`/`horizon` colours over the day/night
+ * cycle, and the uniforms are updated in place (no per-frame allocation).
+ */
+export interface Sky {
+  mesh: THREE.Mesh;
+  top: THREE.Color;
+  bottom: THREE.Color;
+  horizon: THREE.Color;
+  /** push the current .top/.bottom/.horizon colours into the shader. */
+  sync: () => void;
+  dispose: () => void;
+}
+
+function createSky(): Sky {
+  const top = new THREE.Color(0x120a2a);
+  const bottom = new THREE.Color(0x3a2f4a);
+  const horizon = new THREE.Color(0x6b4a66);
+  const geo = new THREE.SphereGeometry(300, 32, 20);
+  const mat = new THREE.ShaderMaterial({
+    side: THREE.BackSide,
+    depthWrite: false,
+    fog: false,
+    uniforms: {
+      uTop: { value: top },
+      uBottom: { value: bottom },
+      uHorizon: { value: horizon },
+    },
+    vertexShader: /* glsl */ `
+      varying vec3 vWorld;
+      void main() {
+        vWorld = position;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      uniform vec3 uTop;
+      uniform vec3 uBottom;
+      uniform vec3 uHorizon;
+      varying vec3 vWorld;
+      void main() {
+        // h in [-1,1] by height; 0 == geometric horizon.
+        float h = normalize(vWorld).y;
+        // Base vertical gradient: bottom -> top across the whole dome.
+        vec3 col = mix(uBottom, uTop, smoothstep(-0.25, 0.9, h));
+        // Warm horizon glow centred slightly BELOW the horizon so its bright
+        // core sits behind the ground plane — only a soft bloom spills above
+        // the skyline, hiding the sky/ground seam while staying crisp.
+        float d = h - (-0.06);
+        float width = h < -0.06 ? 0.26 : 0.14; // bleeds down more than up
+        float glow = exp(-pow(d / width, 2.0));
+        col = mix(col, uHorizon, clamp(glow, 0.0, 1.0));
+        gl_FragColor = vec4(col, 1.0);
+      }
+    `,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.renderOrder = -1;
+  function sync(): void {
+    (mat.uniforms.uTop!.value as THREE.Color).copy(top);
+    (mat.uniforms.uBottom!.value as THREE.Color).copy(bottom);
+    (mat.uniforms.uHorizon!.value as THREE.Color).copy(horizon);
+  }
+  function dispose(): void {
+    geo.dispose();
+    mat.dispose();
+  }
+  return { mesh, top, bottom, horizon, sync, dispose };
+}
+
 export interface SceneHandle {
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
@@ -22,8 +95,12 @@ export interface SceneHandle {
   fog: THREE.FogExp2;
   /** primary moonlight directional light. */
   moonLight: THREE.DirectionalLight;
+  /** warm amber rim/accent light opposite the moon (complementary split). */
+  rimLight: THREE.DirectionalLight;
   /** hemisphere fill light. */
   hemiLight: THREE.HemisphereLight;
+  /** gradient sky dome; world.ts drives its top/bottom colours. */
+  sky: Sky;
   /** the currently-applied render config (quality tier). */
   config: RenderConfig;
   /** apply a new render config at runtime (quality switch). */
@@ -40,9 +117,12 @@ const ACTIVE_MS = 1200; // keep rendering at full rate this long after a wake
 
 export function createScene(container: HTMLElement, initialConfig: RenderConfig): SceneHandle {
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x0b0d12);
-  // Moonlit fog — density tuned so distant graves fade into dusk.
-  const fog = new THREE.FogExp2(0x0b0d12, 0.035);
+  // Dusky blue-grey floor colour — kept well above black so the ground plane
+  // and distant stones never collapse into a void (the world module eases this
+  // toward the night/blood palette at runtime, but never to pitch black).
+  scene.background = new THREE.Color(0x1d2236);
+  // Moonlit fog — density tuned so distant graves fade into dusk, not vanish.
+  const fog = new THREE.FogExp2(0x1d2236, 0.022);
   scene.fog = fog;
 
   const camera = new THREE.PerspectiveCamera(
@@ -71,7 +151,7 @@ export function createScene(container: HTMLElement, initialConfig: RenderConfig)
   controls.target.set(0, 1, 0);
 
   // --- lighting ---
-  const moonLight = new THREE.DirectionalLight(0xbcd4f0, 1.4);
+  const moonLight = new THREE.DirectionalLight(0xbcd4f0, 1.9);
   moonLight.position.set(-6, 12, 4);
   moonLight.castShadow = true;
   moonLight.shadow.mapSize.set(initialConfig.shadowMapSize, initialConfig.shadowMapSize);
@@ -84,16 +164,28 @@ export function createScene(container: HTMLElement, initialConfig: RenderConfig)
   moonLight.shadow.camera.bottom = -d;
   scene.add(moonLight);
 
-  // Overall base fill so the graveyard never goes pitch black.
-  const ambient = new THREE.AmbientLight(0x6b7a99, 0.55);
+  // Warm amber rim/accent light from the opposite side — the complementary
+  // temperature split that keeps a cold night scene from reading flat. It only
+  // kisses the edges of the stones (low intensity, no shadows).
+  const rimLight = new THREE.DirectionalLight(0xffa24d, 1.0);
+  rimLight.position.set(9, 4, -7);
+  scene.add(rimLight);
+
+  // Overall base fill so the graveyard never goes pitch black. Cool tint so the
+  // warm rim reads as a deliberate accent against it.
+  const ambient = new THREE.AmbientLight(0x7a86b8, 0.8);
   scene.add(ambient);
 
-  const hemiLight = new THREE.HemisphereLight(0x8097c0, 0x2a2018, 0.8);
+  const hemiLight = new THREE.HemisphereLight(0x9fb4dc, 0x4a3a2e, 1.05);
   scene.add(hemiLight);
+
+  // --- gradient sky dome (replaces a flat background colour) ---
+  const sky = createSky();
+  scene.add(sky.mesh);
 
   // --- ground ---
   const groundGeo = new THREE.PlaneGeometry(200, 200);
-  const groundMat = new THREE.MeshStandardMaterial({ color: 0x3f3626, roughness: 1 });
+  const groundMat = new THREE.MeshStandardMaterial({ color: 0x635640, roughness: 1 });
   const ground = new THREE.Mesh(groundGeo, groundMat);
   ground.rotation.x = -Math.PI / 2;
   ground.receiveShadow = true;
@@ -235,6 +327,7 @@ export function createScene(container: HTMLElement, initialConfig: RenderConfig)
     postfx?.dispose();
     controls.dispose();
     renderer.dispose();
+    sky.dispose();
     groundGeo.dispose();
     groundMat.dispose();
     renderer.domElement.remove();
@@ -248,7 +341,9 @@ export function createScene(container: HTMLElement, initialConfig: RenderConfig)
     graveyard,
     fog,
     moonLight,
+    rimLight,
     hemiLight,
+    sky,
     get config() {
       return config;
     },

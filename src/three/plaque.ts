@@ -34,22 +34,38 @@ export function createPlaque(): Plaque {
   function setText(title: string, sub: string): void {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // parchment plaque background
-    ctx.fillStyle = 'rgba(232, 220, 192, 0.95)';
+    // Dark aged-stone plaque. Kept intentionally dark so it stays BELOW the
+    // post-processing bloom threshold — a light parchment card blooms to white
+    // and erases the text. Light bone-coloured text gives strong contrast.
+    const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+    grad.addColorStop(0, 'rgba(34, 30, 40, 0.94)');
+    grad.addColorStop(1, 'rgba(22, 19, 27, 0.94)');
+    ctx.fillStyle = grad;
     roundRect(ctx, 8, 8, canvas.width - 16, canvas.height - 16, 16);
     ctx.fill();
-    ctx.lineWidth = 4;
-    ctx.strokeStyle = 'rgba(138, 109, 68, 0.9)';
+    // Warm amber hairline border to echo the scene's accent.
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(224, 150, 90, 0.85)';
     ctx.stroke();
 
-    ctx.fillStyle = '#241a12';
+    // Soft shadow under text for extra legibility against any bleed.
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.75)';
+    ctx.shadowBlur = 6;
+    ctx.shadowOffsetY = 1;
+
+    ctx.fillStyle = '#f3ead6'; // bone white
     ctx.textBaseline = 'middle';
     ctx.font = 'bold 44px Georgia, serif';
     ctx.fillText(truncate(ctx, title, canvas.width - 48), 28, 58);
 
-    ctx.fillStyle = '#4a3a28';
+    ctx.fillStyle = '#d9b98f'; // warm tan for the sub-line
     ctx.font = 'italic 30px Georgia, serif';
     ctx.fillText(truncate(ctx, sub, canvas.width - 48), 28, 112);
+
+    // reset shadow so it doesn't leak into later draws
+    ctx.shadowColor = 'transparent';
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetY = 0;
 
     texture.needsUpdate = true;
   }
