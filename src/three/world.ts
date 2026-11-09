@@ -39,12 +39,12 @@ const BLOOD_MOON_THRESHOLD = 3; // overdue tasks
 //
 // Sky dome has three bands: zenith (top), horizon glow, and below-horizon
 // (bottom). Dusk keeps a strong warm horizon so the frame never reads flat.
-const DUSK_TOP = new THREE.Color(0x2a1e52); // deep indigo-violet zenith
-const NIGHT_TOP = new THREE.Color(0x140e2a); // raven-plum midnight
-const DUSK_HORIZON = new THREE.Color(0xe08040); // warm amber dusk glow (stronger)
-const NIGHT_HORIZON = new THREE.Color(0x7a5a5e); // dusty warm-violet haze at night
-const DUSK_BOTTOM = new THREE.Color(0x3a2b4a); // muted plum ground haze
-const NIGHT_BOTTOM = new THREE.Color(0x1a1526);
+const DUSK_TOP = new THREE.Color(0x1f1442); // deeper violet zenith (star contrast)
+const NIGHT_TOP = new THREE.Color(0x160f30); // raven-plum midnight
+const DUSK_HORIZON = new THREE.Color(0x7c5cc4); // violet dusk glow
+const NIGHT_HORIZON = new THREE.Color(0x4a3a7e); // cool violet haze at night
+const DUSK_BOTTOM = new THREE.Color(0x3a2b5a); // muted plum ground haze
+const NIGHT_BOTTOM = new THREE.Color(0x1a1530);
 const BLOOD = new THREE.Color(0xc0392b);
 const BLOOD_HORIZON = new THREE.Color(0xe0562e); // molten vermilion band
 
@@ -124,6 +124,7 @@ export function createWorld(deps: WorldDeps): World {
     deps.sky.horizon.copy(cHorizon);
     deps.sky.bottom.copy(cBottom);
     deps.sky.sync();
+    deps.sky.tick(dt);
 
     // Fog matches the horizon band so distant graves melt into the glow.
     deps.fog.color.copy(cHorizon);

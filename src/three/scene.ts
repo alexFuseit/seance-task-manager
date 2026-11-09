@@ -26,6 +26,8 @@ export interface Sky {
   horizon: THREE.Color;
   /** push the current .top/.bottom/.horizon colours into the shader. */
   sync: () => void;
+  /** advance the starfield twinkle animation. */
+  tick: (dt: number) => void;
   dispose: () => void;
 }
 
@@ -42,6 +44,7 @@ function createSky(): Sky {
       uTop: { value: top },
       uBottom: { value: bottom },
       uHorizon: { value: horizon },
+      uTime: { value: 0 },
     },
     vertexShader: /* glsl */ `
       varying vec3 vWorld;
@@ -54,12 +57,52 @@ function createSky(): Sky {
       uniform vec3 uTop;
       uniform vec3 uBottom;
       uniform vec3 uHorizon;
+      uniform float uTime;
       varying vec3 vWorld;
+
+      // hash for a stable per-cell pseudo-random value
+      float hash(vec2 p) {
+        p = fract(p * vec2(123.34, 456.21));
+        p += dot(p, p + 45.32);
+        return fract(p.x * p.y);
+      }
+
+      // Procedural starfield over a direction. Cells the sphere's direction
+      // into a grid; a sparse subset of cells host a star with random
+      // brightness + twinkle. Baked in the fragment shader so it renders
+      // identically on any GPU (no gl_PointSize dependency).
+      float stars(vec3 dir, float density, float threshold) {
+        // map direction to 2 uv-ish coords (spherical)
+        vec2 uv = vec2(atan(dir.z, dir.x), asin(clamp(dir.y, -1.0, 1.0)));
+        uv *= density;
+        vec2 cell = floor(uv);
+        float rnd = hash(cell);
+        if (rnd < threshold) return 0.0;
+        // star position jitter within the cell
+        vec2 f = fract(uv);
+        vec2 starPos = vec2(hash(cell + 1.3), hash(cell + 7.7));
+        float dist = length(f - starPos);
+        // bright compact core
+        float core = smoothstep(0.08, 0.0, dist);
+        // twinkle per-star
+        float tw = 0.7 + 0.3 * sin(uTime * 1.8 + rnd * 6.2831);
+        float bright = (0.4 + 0.6 * hash(cell + 3.1));
+        return core * tw * bright;
+      }
+
       void main() {
-        // h in [-1,1] by height; 0 == geometric horizon.
-        float h = normalize(vWorld).y;
+        vec3 dir = normalize(vWorld);
+        float h = dir.y;
         // Base vertical gradient: bottom -> top across the whole dome.
         vec3 col = mix(uBottom, uTop, smoothstep(-0.25, 0.9, h));
+
+        // --- stars (two layers: dense faint + sparse bright) ---
+        float fade = smoothstep(-0.02, 0.35, h); // fade toward horizon
+        float s =
+          stars(dir, 55.0, 0.86) * 0.9 +
+          stars(dir, 26.0, 0.78) * 1.3;
+        col += vec3(0.85, 0.88, 1.0) * s * fade;
+
         // Warm horizon glow centred slightly BELOW the horizon so its bright
         // core sits behind the ground plane — only a soft bloom spills above
         // the skyline, hiding the sky/ground seam while staying crisp.
@@ -73,16 +116,20 @@ function createSky(): Sky {
   });
   const mesh = new THREE.Mesh(geo, mat);
   mesh.renderOrder = -1;
+
   function sync(): void {
     (mat.uniforms.uTop!.value as THREE.Color).copy(top);
     (mat.uniforms.uBottom!.value as THREE.Color).copy(bottom);
     (mat.uniforms.uHorizon!.value as THREE.Color).copy(horizon);
   }
+  function tick(dt: number): void {
+    mat.uniforms.uTime!.value += dt;
+  }
   function dispose(): void {
     geo.dispose();
     mat.dispose();
   }
-  return { mesh, top, bottom, horizon, sync, dispose };
+  return { mesh, top, bottom, horizon, sync, tick, dispose };
 }
 
 export interface SceneHandle {
@@ -131,8 +178,9 @@ export function createScene(container: HTMLElement, initialConfig: RenderConfig)
     0.1,
     200,
   );
-  // Low, moody framing near ground level looking slightly up at the stones.
-  camera.position.set(1.5, 2.4, 8.5);
+  // Low, moody framing: pulled back and slightly elevated to establish the
+  // field of graves the user can roam across (drag to orbit, scroll to zoom).
+  camera.position.set(2.5, 4.5, 13);
 
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, initialConfig.maxPixelRatio));
@@ -146,9 +194,11 @@ export function createScene(container: HTMLElement, initialConfig: RenderConfig)
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
   controls.maxPolarAngle = Math.PI * 0.49; // don't go below the ground
-  controls.minDistance = 3;
-  controls.maxDistance = 40;
-  controls.target.set(0, 1, 0);
+  controls.minDistance = 4;
+  controls.maxDistance = 60;
+  controls.enablePan = true; // let the user drag across the graveyard field
+  controls.screenSpacePanning = false; // pan along the ground, not the screen
+  controls.target.set(0, 1, -4);
 
   // --- lighting ---
   const moonLight = new THREE.DirectionalLight(0xbcd4f0, 1.9);
@@ -176,7 +226,7 @@ export function createScene(container: HTMLElement, initialConfig: RenderConfig)
   const ambient = new THREE.AmbientLight(0x7a86b8, 0.8);
   scene.add(ambient);
 
-  const hemiLight = new THREE.HemisphereLight(0x9fb4dc, 0x4a3a2e, 1.05);
+  const hemiLight = new THREE.HemisphereLight(0xa8b0e8, 0x3a2f5a, 1.05);
   scene.add(hemiLight);
 
   // --- gradient sky dome (replaces a flat background colour) ---
@@ -185,7 +235,7 @@ export function createScene(container: HTMLElement, initialConfig: RenderConfig)
 
   // --- ground ---
   const groundGeo = new THREE.PlaneGeometry(200, 200);
-  const groundMat = new THREE.MeshStandardMaterial({ color: 0x635640, roughness: 1 });
+  const groundMat = new THREE.MeshStandardMaterial({ color: 0x3a3152, roughness: 1 });
   const ground = new THREE.Mesh(groundGeo, groundMat);
   ground.rotation.x = -Math.PI / 2;
   ground.receiveShadow = true;

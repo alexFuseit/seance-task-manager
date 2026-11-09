@@ -28,6 +28,7 @@ import {
   tickGrave,
 } from './grave';
 import { createPlaque, type Plaque } from './plaque';
+import { createLabelLayer, type LabelLayer } from './labels';
 import { type Effect, createGhost, createDustBurst } from './effects';
 
 type Transient = 'idle' | 'laying-to-rest' | 'exhuming';
@@ -56,7 +57,7 @@ export interface Reconciler {
 }
 
 const RISE_SPEED = 2.2;
-const PLOT_SPACING = 3.0;
+const PLOT_SPACING = 4.2;
 const LAY_TO_REST_DUR = 1.6; // seconds — grave sinks + ghost rises
 const EXHUME_DUR = 1.1; // seconds — grave pulls up then crumbles
 
@@ -93,6 +94,11 @@ export function createReconciler(
   scene.scene.add(plaque.sprite);
   const dom = scene.renderer.domElement;
 
+  // HTML label layer (Option A) — task cards anchored to the 3D graves. Lives
+  // in the canvas host so it overlays the WebGL canvas.
+  const labelHost = (dom.parentElement as HTMLElement) ?? dom;
+  const labels: LabelLayer = createLabelLayer(labelHost, onSelect);
+
   function visualOf(task: Task, search: string): GraveVisual {
     const q = search.trim().toLowerCase();
     const searchActive = q.length > 0;
@@ -112,19 +118,24 @@ export function createReconciler(
   }
 
   /**
-   * Compute a grave's plot from its index in the *sorted visible* list, laid
-   * out as a centered grid in rows receding from the camera. Using the sorted
-   * index means changing the sort order re-positions graves — and the per-frame
-   * easing animates the move (4.2/2.2).
+   * Compute a grave's plot from its index in the *sorted visible* list. Laid
+   * out as a wider, staggered field receding from the camera with a small
+   * deterministic jitter so the graveyard feels natural (not a rigid grid) and
+   * is worth roaming across with OrbitControls. Deterministic (index-seeded) so
+   * positions are stable between renders; the per-frame easing animates moves.
    */
   function layoutPosition(index: number): THREE.Vector3 {
-    const perRow = 4;
+    const perRow = 5;
     const row = Math.floor(index / perRow);
     const col = index % perRow;
-    // centre each row horizontally; stagger alternate rows for a natural feel
-    const offset = (row % 2) * (PLOT_SPACING / 2);
-    const x = (col - (perRow - 1) / 2) * PLOT_SPACING + offset;
-    const z = -row * PLOT_SPACING;
+    const offset = (row % 2) * (PLOT_SPACING / 2); // brick-stagger alternate rows
+    // seeded pseudo-random jitter in [-0.6, 0.6]
+    const jx = (Math.sin(index * 12.9898) * 43758.5453) % 1;
+    const jz = (Math.sin(index * 78.233) * 12543.4523) % 1;
+    const jitterX = (jx - Math.floor(jx) - 0.5) * 1.2;
+    const jitterZ = (jz - Math.floor(jz) - 0.5) * 1.2;
+    const x = (col - (perRow - 1) / 2) * PLOT_SPACING + offset + jitterX;
+    const z = -row * PLOT_SPACING + jitterZ;
     return new THREE.Vector3(x, 0, z);
   }
 
@@ -143,6 +154,7 @@ export function createReconciler(
 
   function startExhume(entry: GraveEntry): void {
     entries.delete(entry.taskId);
+    labels.remove(entry.taskId);
     if (hovered === entry.taskId) hideHover();
     if (opts.reducedMotion) {
       scene.graveyard.remove(entry.parts.group);
@@ -166,6 +178,7 @@ export function createReconciler(
       const visual = visualOf(task, search);
       const sig = signature(visual);
       const pos = layoutPosition(index);
+      labels.upsert(task.id, task);
 
       const existing = entries.get(task.id);
       if (!existing) {
@@ -344,6 +357,17 @@ export function createReconciler(
       }
     }
 
+    // Project HTML labels onto the active (risen, non-exhuming) graves.
+    const order: { taskId: string; anchor: THREE.Vector3 }[] = [];
+    for (const entry of entries.values()) {
+      const p = entry.parts.group.position;
+      order.push({
+        taskId: entry.taskId,
+        anchor: new THREE.Vector3(p.x, p.y + entry.parts.height + 0.75, p.z),
+      });
+    }
+    labels.sync(scene.camera, order);
+
     // Keep the loop at full rate while anything is still animating
     // (crows/spirit are continuous, so overdue/due-soon graves stay lively).
     if (anyActive) scene.wake();
@@ -381,15 +405,9 @@ export function createReconciler(
     dom.style.cursor = 'pointer';
     if (hovered !== hit.taskId) {
       hovered = hit.taskId;
-      const task = store.getState().tasks.find((t) => t.id === hit.taskId);
-      if (task) {
-        const sub =
-          task.priority.toUpperCase() +
-          ' priority' +
-          (task.dueDate ? ` · due ${new Date(task.dueDate).toLocaleDateString()}` : '');
-        plaque.setText(task.title, sub);
-        plaque.sprite.visible = true;
-      }
+      // The HTML label layer already shows title/date/priority for nearby
+      // graves, so the canvas sprite plaque is kept hidden to avoid a doubled
+      // label. Hover still drives the cursor + highlight + click-to-select.
     }
     scene.wake();
   }
@@ -438,6 +456,7 @@ export function createReconciler(
     effects.clear();
     scene.scene.remove(plaque.sprite);
     plaque.dispose();
+    labels.dispose();
   }
 
   return { dispose };

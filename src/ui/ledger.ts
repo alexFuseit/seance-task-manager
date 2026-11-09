@@ -22,6 +22,33 @@ import {
 } from '../model/query';
 import { el, clear } from './dom';
 
+/** Inline SVG helper (self-made icons; no third-party asset dependency). */
+function svg(paths: string, cls = ''): SVGElement {
+  const ns = 'http://www.w3.org/2000/svg';
+  const s = document.createElementNS(ns, 'svg');
+  s.setAttribute('viewBox', '0 0 24 24');
+  s.setAttribute('fill', 'none');
+  s.setAttribute('stroke', 'currentColor');
+  s.setAttribute('stroke-width', '1.8');
+  s.setAttribute('stroke-linecap', 'round');
+  s.setAttribute('stroke-linejoin', 'round');
+  if (cls) s.setAttribute('class', cls);
+  const g = document.createElementNS(ns, 'g');
+  g.innerHTML = paths;
+  s.appendChild(g);
+  return s;
+}
+
+const L_ICON = {
+  grave:
+    '<path d="M6 21V9a6 6 0 0 1 12 0v12" fill="rgba(255,255,255,0.1)"/><path d="M4 21h16"/><path d="M12 7v5M9.5 9.5h5"/>',
+  check: '<circle cx="12" cy="12" r="9"/><path d="M8.5 12.2l2.3 2.3 4.7-4.8"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2"/>',
+  warn: '<path d="M12 3 2.5 20h19L12 3Z"/><path d="M12 10v4"/><circle cx="12" cy="17.2" r="0.9" fill="currentColor" stroke="none"/>',
+  ghostSmall:
+    '<path d="M5 20V11a7 7 0 0 1 14 0v9l-2.3-1.6L14.4 20 12 18.3 9.6 20 7.3 18.4 5 20Z"/><circle cx="9.3" cy="10.5" r="0.9" fill="currentColor" stroke="none"/><circle cx="14.7" cy="10.5" r="0.9" fill="currentColor" stroke="none"/>',
+};
+
 const STATUS_OPTIONS: { value: StatusFilter; label: string }[] = [
   { value: 'all', label: 'All' },
   { value: 'active', label: 'Active' },
@@ -68,6 +95,12 @@ export interface LedgerHandle {
   element: HTMLElement;
   /** Open the edit dialog for a task — also used by the 3D click-to-select. */
   openEditor: (taskId: string) => void;
+  /** Focus the quick-add title field — used by the shell's "+ Add Task". */
+  focusQuickAdd: () => void;
+  /** Register the handler for the banner's "Enter the graveyard" button. */
+  onEnterGraveyard: (handler: () => void) => void;
+  /** Toggle whether the graveyard is reachable (WebGL availability). */
+  setGraveyardAvailable: (available: boolean) => void;
   /** Stop subscribing and tear down. */
   unsubscribe: () => void;
 }
@@ -80,12 +113,22 @@ export function mountLedger(parent: HTMLElement, store: SeanceStore): LedgerHand
     'Skip to task ledger',
   ]);
 
-  const header = el('header', { class: 'site-header' }, [
+  const header = el('header', { class: 'ledger-banner' });
+  // "Enter the graveyard" button lives top-left of the banner (matches mockup).
+  const enterBtn = el('button', {
+    type: 'button',
+    class: 'enter-graveyard',
+  }) as HTMLButtonElement;
+  enterBtn.append(svg(L_ICON.grave, 'enter-icon'), el('span', {}, ['Enter the graveyard']));
+  const enterNotice = el('span', { class: 'view-notice' });
+
+  const bannerTitle = el('div', { class: 'ledger-banner-title' }, [
     el('h1', { text: 'Séance' }),
     el('p', { class: 'tagline', text: 'A graveyard for your tasks. Lay them to rest.' }),
   ]);
+  header.append(el('div', { class: 'banner-left' }, [enterBtn, enterNotice]), bannerTitle);
 
-  const statsBar = el('div', { class: 'stats', role: 'status', 'aria-live': 'polite' });
+  const statsBar = el('div', { class: 'stat-row', role: 'status', 'aria-live': 'polite' });
 
   // Quick-add form
   const titleInput = el('input', {
@@ -105,7 +148,8 @@ export function mountLedger(parent: HTMLElement, store: SeanceStore): LedgerHand
     id: 'qa-due',
     'aria-label': 'Due date (optional)',
   }) as HTMLInputElement;
-  const addBtn = el('button', { type: 'submit', class: 'primary' }, ['+ Dig a Grave']);
+  const addBtn = el('button', { type: 'submit', class: 'primary bury-btn' });
+  addBtn.append(svg(L_ICON.grave, 'bury-icon'), el('span', {}, ['Bury a Task']));
 
   const quickAdd = el('form', { class: 'quick-add', 'aria-label': 'Add a task' }, [
     el('div', { class: 'field grow' }, [
@@ -142,7 +186,7 @@ export function mountLedger(parent: HTMLElement, store: SeanceStore): LedgerHand
   const searchInput = el('input', {
     type: 'search',
     id: 'f-search',
-    placeholder: 'Search title or notes…',
+    placeholder: 'Search epitaph or stone…',
     'aria-label': 'Search tasks',
   }) as HTMLInputElement;
   const statusSelect = el('select', { id: 'f-status', 'aria-label': 'Filter by status' },
@@ -269,16 +313,31 @@ export function mountLedger(parent: HTMLElement, store: SeanceStore): LedgerHand
   // --- rendering ----------------------------------------------------------
   function renderStats(): void {
     const s = store.getState();
+    const now = Date.now();
     const total = s.tasks.length;
     const active = s.tasks.filter((t) => t.status === 'active').length;
-    const done = total - active;
-    const overdue = countOverdue(s.tasks);
+    const overdue = countOverdue(s.tasks, now);
+    const dueSoon = s.tasks.reduce(
+      (n, t) => (t.status === 'active' && dueState(t, now) === 'soon' ? n + 1 : n),
+      0,
+    );
     clear(statsBar);
+
+    const stat = (iconPaths: string, cls: string, n: number, label: string) => {
+      const span = el('span', { class: `stat ${cls}` });
+      span.append(
+        svg(iconPaths, 'stat-icon'),
+        el('b', { text: String(n) }),
+        el('span', { text: ` ${label}` }),
+      );
+      return span;
+    };
+
     statsBar.append(
-      el('span', { class: 'stat' }, [el('b', { text: String(total) }), ' graves']),
-      el('span', { class: 'stat' }, [el('b', { text: String(active) }), ' restless']),
-      el('span', { class: 'stat' }, [el('b', { text: String(done) }), ' at rest']),
-      el('span', { class: 'stat overdue' }, [el('b', { text: String(overdue) }), ' overdue']),
+      stat(L_ICON.grave, 'graves', total, total === 1 ? 'grave' : 'graves'),
+      stat(L_ICON.check, 'restless', active, 'restless'),
+      stat(L_ICON.clock, 'soon', dueSoon, 'due soon'),
+      stat(L_ICON.warn, 'overdue', overdue, 'overdue'),
     );
   }
 
@@ -326,7 +385,31 @@ export function mountLedger(parent: HTMLElement, store: SeanceStore): LedgerHand
 
   renderAll();
   const unsubscribe = store.subscribe(renderAll);
-  return { element: root, openEditor: editor.open, unsubscribe };
+  function focusQuickAdd(): void {
+    titleInput.scrollIntoView({ block: 'center', behavior: 'auto' });
+    titleInput.focus();
+  }
+  function onEnterGraveyard(handler: () => void): void {
+    enterBtn.addEventListener('click', handler);
+  }
+  function setGraveyardAvailable(available: boolean): void {
+    enterBtn.disabled = !available;
+    if (available) {
+      enterNotice.textContent = '';
+    } else {
+      enterBtn.classList.add('disabled');
+      enterNotice.textContent =
+        'WebGL unavailable — showing the accessible ledger.';
+    }
+  }
+  return {
+    element: root,
+    openEditor: editor.open,
+    focusQuickAdd,
+    onEnterGraveyard,
+    setGraveyardAvailable,
+    unsubscribe,
+  };
 }
 
 function renderRow(
@@ -336,28 +419,32 @@ function renderRow(
 ): HTMLTableRowElement {
   const ds = dueState(task);
   const dueClass = task.status === 'active' && (ds === 'overdue' || ds === 'soon') ? ds : '';
+  const completed = task.status === 'completed';
 
+  // Title cell with a per-row grave icon (matches the mockup).
+  const titleText = el('span', { class: 'row-title' }, [document.createTextNode(task.title)]);
   const titleCell = el('td', { class: 'title-cell' }, [
-    document.createTextNode(task.title),
+    el('span', { class: 'row-grave-icon' }, [svg(L_ICON.grave)]),
+    titleText,
   ]);
   if (task.notes) {
-    titleCell.append(el('span', { class: 'notes', text: task.notes }));
+    titleText.append(el('span', { class: 'notes', text: task.notes }));
   }
 
   const completeBtn = el(
     'button',
-    { type: 'button', class: 'ghost' },
-    [task.status === 'active' ? 'Lay to rest' : 'Exhume (reopen)'],
+    { type: 'button', class: 'pill-btn complete' },
+    [completed ? 'Exhume (reopen)' : 'Lay to rest'],
   );
   completeBtn.addEventListener('click', () => {
     if (task.status === 'active') store.getState().completeTask(task.id);
     else store.getState().reopenTask(task.id);
   });
 
-  const editBtn = el('button', { type: 'button' }, ['Edit']);
+  const editBtn = el('button', { type: 'button', class: 'pill-btn edit' }, ['Edit']);
   editBtn.addEventListener('click', () => editor.open(task.id));
 
-  const delBtn = el('button', { type: 'button', class: 'danger' }, ['Exhume']);
+  const delBtn = el('button', { type: 'button', class: 'pill-btn exhume' }, ['Exhume']);
   delBtn.setAttribute('aria-label', `Delete task: ${task.title}`);
   delBtn.addEventListener('click', () => {
     if (window.confirm(`Exhume “${task.title}”? This removes the grave for good.`)) {
@@ -365,14 +452,27 @@ function renderRow(
     }
   });
 
+  // Status cell: ghost glyph + label.
+  const statusCell = el('td', {}, [
+    el('span', { class: `status-chip ${completed ? 'at-rest' : 'active'}` }, [
+      svg(L_ICON.ghostSmall, 'status-icon'),
+      el('span', { text: completed ? 'At rest' : 'Active' }),
+    ]),
+  ]);
+
   return el(
     'tr',
-    { class: task.status === 'completed' ? 'completed' : '', 'data-id': task.id },
+    { class: completed ? 'completed' : '', 'data-id': task.id },
     [
       titleCell,
-      el('td', {}, [el('span', { class: `badge priority-${task.priority}`, text: task.priority })]),
+      el('td', {}, [
+        el('span', {
+          class: `badge priority-${task.priority}`,
+          text: task.priority.toUpperCase(),
+        }),
+      ]),
       el('td', {}, [el('span', { class: `due ${dueClass}`, text: fmtDate(task.dueDate) })]),
-      el('td', { text: task.status === 'active' ? 'Active' : 'At rest' }),
+      statusCell,
       el('td', {}, [el('div', { class: 'row-actions' }, [completeBtn, editBtn, delBtn])]),
     ],
   ) as HTMLTableRowElement;
