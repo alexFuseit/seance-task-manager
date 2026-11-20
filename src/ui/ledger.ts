@@ -8,6 +8,7 @@
  */
 import { type SeanceStore } from '../store/task-store';
 import {
+  type AppState,
   type Priority,
   type Task,
   PRIORITIES,
@@ -21,6 +22,8 @@ import {
   countOverdue,
 } from '../model/query';
 import { el, clear } from './dom';
+import { TaskValidationError } from '../store/task-store';
+import { parseImport } from '../model/validation';
 
 /** Inline SVG helper (self-made icons; no third-party asset dependency). */
 function svg(paths: string, cls = ''): SVGElement {
@@ -90,6 +93,23 @@ function toDateInput(iso?: string): string {
   return d.toISOString().slice(0, 10);
 }
 
+function errorMessage(err: unknown): string {
+  return err instanceof TaskValidationError ? `${err.message}.` : 'Something went wrong.';
+}
+
+/** Show an inline, screen-reader-announced validation error on a field. */
+function showFieldError(input: HTMLInputElement, msg: HTMLElement, text: string): void {
+  input.setAttribute('aria-invalid', 'true');
+  msg.textContent = text;
+  input.focus();
+}
+
+function clearFieldError(input: HTMLInputElement, msg: HTMLElement): void {
+  if (!input.hasAttribute('aria-invalid')) return;
+  input.removeAttribute('aria-invalid');
+  msg.textContent = '';
+}
+
 export interface LedgerHandle {
   /** The ledger's root element (so a view toggle can show/hide it). */
   element: HTMLElement;
@@ -136,8 +156,10 @@ export function mountLedger(parent: HTMLElement, store: SeanceStore): LedgerHand
     id: 'qa-title',
     placeholder: 'Epitaph (task title)…',
     'aria-label': 'New task title',
+    'aria-describedby': 'qa-title-error',
     maxlength: 200,
   }) as HTMLInputElement;
+  const qaError = el('p', { class: 'field-error', id: 'qa-title-error', role: 'alert' });
   const priSelect = el('select', { id: 'qa-priority', 'aria-label': 'Priority' },
     PRIORITIES.map((p) =>
       el('option', { value: p, ...(p === 'medium' ? { selected: true } : {}) }, [p]),
@@ -151,10 +173,11 @@ export function mountLedger(parent: HTMLElement, store: SeanceStore): LedgerHand
   const addBtn = el('button', { type: 'submit', class: 'primary bury-btn' });
   addBtn.append(svg(L_ICON.grave, 'bury-icon'), el('span', {}, ['Bury a Task']));
 
-  const quickAdd = el('form', { class: 'quick-add', 'aria-label': 'Add a task' }, [
+  const quickAdd = el('form', { class: 'quick-add', 'aria-label': 'Add a task', novalidate: true }, [
     el('div', { class: 'field grow' }, [
       el('label', { for: 'qa-title', text: 'New task' }),
       titleInput,
+      qaError,
     ]),
     el('div', { class: 'field' }, [
       el('label', { for: 'qa-priority', text: 'Priority' }),
@@ -166,21 +189,23 @@ export function mountLedger(parent: HTMLElement, store: SeanceStore): LedgerHand
 
   quickAdd.addEventListener('submit', (e) => {
     e.preventDefault();
-    const title = titleInput.value.trim();
-    if (!title) {
-      titleInput.focus();
+    try {
+      store.getState().addTask({
+        title: titleInput.value,
+        priority: priSelect.value as Priority,
+        dueDate: dueInput.value || undefined,
+      });
+    } catch (err) {
+      showFieldError(titleInput, qaError, errorMessage(err));
       return;
     }
-    store.getState().addTask({
-      title,
-      priority: priSelect.value as Priority,
-      dueDate: dueInput.value || undefined,
-    });
+    clearFieldError(titleInput, qaError);
     titleInput.value = '';
     dueInput.value = '';
     priSelect.value = 'medium';
     titleInput.focus();
   });
+  titleInput.addEventListener('input', () => clearFieldError(titleInput, qaError));
 
   // --- toolbar (filter / sort / search / io) ------------------------------
   const searchInput = el('input', {
@@ -262,14 +287,16 @@ export function mountLedger(parent: HTMLElement, store: SeanceStore): LedgerHand
   importFile.addEventListener('change', async () => {
     const file = importFile.files?.[0];
     if (!file) return;
+    let parsed: AppState;
     try {
-      const text = await file.text();
-      store.getState().importJson(text);
+      parsed = parseImport(await file.text());
     } catch {
       window.alert('Could not import: the file is not valid Séance JSON.');
+      return;
     } finally {
       importFile.value = '';
     }
+    importDialog.ask(parsed);
   });
 
   const toolbar = el('div', { class: 'toolbar', role: 'group', 'aria-label': 'Filter, sort and search' }, [
@@ -306,9 +333,12 @@ export function mountLedger(parent: HTMLElement, store: SeanceStore): LedgerHand
 
   root.append(skip, header, statsBar, quickAdd, toolbar, ledgerWrap);
 
-  // --- edit dialog --------------------------------------------------------
+  // --- dialogs -------------------------------------------------------------
+  // Appended to <body> (not the ledger root) so they still render when the
+  // ledger is hidden behind the 3D graveyard (click-a-grave → edit).
   const editor = buildEditor(store);
-  root.append(editor.dialog);
+  const importDialog = buildImportDialog(store, () => importBtn.focus());
+  document.body.append(editor.dialog, importDialog.dialog);
 
   // --- rendering ----------------------------------------------------------
   function renderStats(): void {
@@ -408,7 +438,11 @@ export function mountLedger(parent: HTMLElement, store: SeanceStore): LedgerHand
     focusQuickAdd,
     onEnterGraveyard,
     setGraveyardAvailable,
-    unsubscribe,
+    unsubscribe: () => {
+      unsubscribe();
+      editor.dialog.remove();
+      importDialog.dialog.remove();
+    },
   };
 }
 
@@ -482,7 +516,13 @@ function renderRow(
 function buildEditor(store: SeanceStore) {
   let currentId: string | null = null;
 
-  const title = el('input', { type: 'text', id: 'ed-title', maxlength: 200 }) as HTMLInputElement;
+  const title = el('input', {
+    type: 'text',
+    id: 'ed-title',
+    maxlength: 200,
+    'aria-describedby': 'ed-title-error',
+  }) as HTMLInputElement;
+  const titleError = el('p', { class: 'field-error', id: 'ed-title-error', role: 'alert' });
   const notes = el('textarea', { id: 'ed-notes', maxlength: 2000 }) as HTMLTextAreaElement;
   const priority = el('select', { id: 'ed-priority' },
     PRIORITIES.map((p) => el('option', { value: p }, [p])),
@@ -492,9 +532,13 @@ function buildEditor(store: SeanceStore) {
   const save = el('button', { type: 'submit', class: 'primary' }, ['Save']);
   const cancel = el('button', { type: 'button', class: 'ghost' }, ['Cancel']);
 
-  const form = el('form', { method: 'dialog' }, [
+  const form = el('form', { method: 'dialog', novalidate: true }, [
     el('h2', { text: 'Edit grave' }),
-    el('div', { class: 'field' }, [el('label', { for: 'ed-title', text: 'Epitaph (title)' }), title]),
+    el('div', { class: 'field' }, [
+      el('label', { for: 'ed-title', text: 'Epitaph (title)' }),
+      title,
+      titleError,
+    ]),
     el('div', { class: 'field' }, [el('label', { for: 'ed-notes', text: 'Notes' }), notes]),
     el('div', { class: 'field' }, [el('label', { for: 'ed-priority', text: 'Priority' }), priority]),
     el('div', { class: 'field' }, [el('label', { for: 'ed-due', text: 'Due date' }), due]),
@@ -508,24 +552,26 @@ function buildEditor(store: SeanceStore) {
   form.addEventListener('submit', (e) => {
     e.preventDefault();
     if (!currentId) return;
-    const t = title.value.trim();
-    if (!t) {
-      title.focus();
+    try {
+      store.getState().updateTask(currentId, {
+        title: title.value,
+        notes: notes.value,
+        priority: priority.value as Priority,
+        dueDate: due.value || undefined,
+      });
+    } catch (err) {
+      showFieldError(title, titleError, errorMessage(err));
       return;
     }
-    store.getState().updateTask(currentId, {
-      title: t,
-      notes: notes.value,
-      priority: priority.value as Priority,
-      dueDate: due.value || undefined,
-    });
     dialog.close();
   });
+  title.addEventListener('input', () => clearFieldError(title, titleError));
 
   function open(id: string): void {
     const task = store.getState().tasks.find((x) => x.id === id);
     if (!task) return;
     currentId = id;
+    clearFieldError(title, titleError);
     title.value = task.title;
     notes.value = task.notes ?? '';
     priority.value = task.priority;
@@ -535,4 +581,69 @@ function buildEditor(store: SeanceStore) {
   }
 
   return { dialog, open };
+}
+
+
+/**
+ * Confirm-before-import dialog. Importing used to silently replace every task;
+ * now the user sees what the file contains and chooses Replace (overwrite all
+ * tasks + settings), Merge (add only tasks whose ids are new) or Cancel.
+ */
+function buildImportDialog(store: SeanceStore, returnFocus: () => void) {
+  let pending: AppState | null = null;
+
+  const summary = el('p', { id: 'imp-summary' });
+  const replaceBtn = el('button', { type: 'button', class: 'danger' }, ['Replace all']);
+  const mergeBtn = el('button', { type: 'button', class: 'primary' }, ['Merge']);
+  const cancelBtn = el('button', { type: 'button', class: 'ghost' }, ['Cancel']);
+
+  const dialog = el(
+    'dialog',
+    { class: 'editor', 'aria-labelledby': 'imp-title', 'aria-describedby': 'imp-summary' },
+    [
+      el('form', { method: 'dialog' }, [
+        el('h2', { id: 'imp-title', text: 'Import ledger' }),
+        summary,
+        el('p', {
+          class: 'setting-hint',
+          text: 'Merge keeps your current graves and adds the new ones. Replace overwrites everything.',
+        }),
+        el('div', { class: 'dialog-actions' }, [cancelBtn, replaceBtn, mergeBtn]),
+      ]),
+    ],
+  ) as HTMLDialogElement;
+
+  function finish(): void {
+    pending = null;
+    dialog.close();
+  }
+  dialog.addEventListener('close', () => {
+    pending = null;
+    returnFocus();
+  });
+  cancelBtn.addEventListener('click', finish);
+  replaceBtn.addEventListener('click', () => {
+    if (pending) store.getState().replaceState(pending);
+    finish();
+  });
+  mergeBtn.addEventListener('click', () => {
+    if (pending) store.getState().mergeTasks(pending.tasks);
+    finish();
+  });
+
+  function ask(next: AppState): void {
+    pending = next;
+    const current = store.getState().tasks;
+    const ids = new Set(current.map((t) => t.id));
+    const fresh = next.tasks.filter((t) => !ids.has(t.id)).length;
+    const n = next.tasks.length;
+    summary.textContent =
+      `The file holds ${n} grave${n === 1 ? '' : 's'} (${fresh} new). ` +
+      `You currently have ${current.length}.`;
+    mergeBtn.toggleAttribute('disabled', fresh === 0);
+    dialog.showModal();
+    (fresh === 0 ? cancelBtn : mergeBtn).focus();
+  }
+
+  return { dialog, ask };
 }

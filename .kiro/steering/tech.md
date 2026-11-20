@@ -5,10 +5,13 @@
 - **Build/dev:** Vite (static output; no server runtime).
 - **3D:** Three.js (WebGL) — direct scene control, instancing, custom shaders.
 - **Post-processing:** Three `EffectComposer` (bloom, vignette, depth fog, film grain).
-- **State:** Zustand vanilla build (`zustand/vanilla`) + `persist` middleware.
-  A hand-rolled ~50-line observable store is the fallback if dependency count must drop.
+- **State:** Zustand vanilla build (`zustand/vanilla`). Persistence is a store
+  subscriber that writes only when `tasks`/`settings` change (view state is never
+  persisted). A hand-rolled ~50-line observable store is the fallback if dependency
+  count must drop.
 - **UI overlay:** Vanilla TS + CSS (gothic/parchment). **No React.**
-- **Fonts:** Self-hosted OFL gothic/serif typefaces (no external CDN).
+- **Fonts:** Cinzel (display) + EB Garamond (text), SIL OFL, via `@fontsource`
+  packages bundled by Vite — no external CDN.
 - **Audio:** Web Audio API / `<audio>`, gesture-gated, default muted.
 - **Hosting:** Vite static build → GitHub Pages / Netlify / Cloudflare Pages / S3+CloudFront.
 
@@ -25,10 +28,15 @@ the hardest 20% (shaders, instancing, post-processing). The DOM overlay is small
   `schemaVersion` payloads; survive empty/corrupt data without crashing.
 
 ## Performance rules
-- Use `InstancedMesh` + shared materials + texture atlases for graves.
-- Frustum culling + distance LOD; drop particles/effects at distance.
-- Quality tiers (High/Medium/Low) gate post-fx, shadow resolution, particle counts, fog steps.
-- Pause rendering when the tab is hidden; throttle when idle.
+- Share geometry (one per grave shape) and stateless materials across graves; only
+  materials whose values animate per grave may be per-instance. Build decorations
+  lazily. Never allocate (`new Vector3`, `.map`, `.clone`) inside per-frame callbacks.
+  `InstancedMesh` is the next step if grave counts grow well beyond ~100.
+- Frustum culling + distance LOD; decorations only on the nearest N graves.
+- Quality tiers (High/Medium/Low) gate post-fx, shadow resolution, decorations, DPR.
+- Pause rendering when the tab is hidden. Render-rate contract: frame callbacks call
+  `scene.wake()` only while something *transitions*, `scene.ambient()` for continuous
+  decorative motion; never call `wake()` unconditionally every frame.
 - Target 60 fps with ~100 graves.
 
 ## Coding conventions
@@ -45,5 +53,10 @@ the hardest 20% (shaders, instancing, post-processing). The DOM overlay is small
 
 ## Tooling & verification
 - Run the Vite build before presenting changes.
-- Add tests for the store/model and JSON import migration (the data-integrity core).
+- Unit tests (Vitest, `src/**/*.test.ts`) cover the store/model, JSON import
+  migration, and pure graveyard helpers (`model/atmosphere.ts`, `three/grave-visual.ts`).
+  Keep new visual-mapping logic in pure modules so it stays testable in Node.
+- E2E smoke tests (Playwright, `e2e/`) run against the production build:
+  `npm run test:e2e`. CI (`.github/workflows/deploy.yml`) runs both before deploying.
+- Pin dependency versions exactly (no `^`/`~`).
 - Prefer the project's configured scripts (see `package.json`) over ad-hoc commands.

@@ -13,9 +13,11 @@ import {
   type Status,
   type Task,
   type Quality,
+  type MotionPref,
   SCHEMA_VERSION,
   defaultSettings,
   emptyState,
+  resolveReducedMotion,
 } from './types';
 
 function isObject(v: unknown): v is Record<string, unknown> {
@@ -32,6 +34,10 @@ function isStatus(v: unknown): v is Status {
 
 function isQuality(v: unknown): v is Quality {
   return v === 'high' || v === 'medium' || v === 'low';
+}
+
+function isMotionPref(v: unknown): v is MotionPref {
+  return v === 'system' || v === 'reduce' || v === 'full';
 }
 
 function isIsoish(v: unknown): v is string {
@@ -54,19 +60,14 @@ export function parseTask(input: unknown): Task | null {
     ? (input.createdAt as string)
     : new Date().toISOString();
 
-  const plotRaw = isObject(input.plot) ? input.plot : undefined;
-  const plot = {
-    x: plotRaw && typeof plotRaw.x === 'number' ? plotRaw.x : 0,
-    z: plotRaw && typeof plotRaw.z === 'number' ? plotRaw.z : 0,
-  };
-
+  // Legacy payloads may carry a `plot` field; layout is derived from sort
+  // order at render time, so it is intentionally dropped here.
   const task: Task = {
     id,
     title,
     priority,
     status,
     createdAt,
-    plot,
   };
 
   if (typeof input.notes === 'string' && input.notes.trim().length > 0) {
@@ -87,11 +88,15 @@ export function parseTask(input: unknown): Task | null {
 function parseSettings(input: unknown): Settings {
   const base = defaultSettings();
   if (!isObject(input)) return base;
+  // Older payloads stored only the effective `reducedMotion` boolean (which was
+  // overwritten from the OS each launch), so they map to 'system'.
+  const motion: MotionPref = isMotionPref(input.motion) ? input.motion : base.motion;
   return {
     quality: isQuality(input.quality) ? input.quality : base.quality,
     muted: typeof input.muted === 'boolean' ? input.muted : base.muted,
-    reducedMotion:
-      typeof input.reducedMotion === 'boolean' ? input.reducedMotion : base.reducedMotion,
+    motion,
+    // Re-resolved against the live OS preference by the store at startup.
+    reducedMotion: resolveReducedMotion(motion, false),
     showCompleted:
       typeof input.showCompleted === 'boolean' ? input.showCompleted : base.showCompleted,
   };

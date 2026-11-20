@@ -12,5 +12,7 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
+    // Playwright specs live in e2e/ and run via `npm run test:e2e`.
+    include: ['src/**/*.test.ts'],
   },
 });

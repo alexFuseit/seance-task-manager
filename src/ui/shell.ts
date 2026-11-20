@@ -12,6 +12,7 @@
  */
 import { type SeanceStore } from '../store/task-store';
 import { type Quality } from '../model/types';
+import { type SoundControl } from './settings';
 import { el } from './dom';
 
 export interface ShellDeps {
@@ -22,8 +23,8 @@ export interface ShellDeps {
   onAdd: () => void;
   /** switch back to the accessible 2D ledger. */
   onOpenLedger: () => void;
-  /** ambient audio controls. */
-  audio: { isEnabled: () => boolean; toggle: () => Promise<boolean> };
+  /** ambient audio control (shared with the Settings dialog). */
+  sound: SoundControl;
   /** whether WebGL (and thus the graveyard) is available. */
   webglAvailable: boolean;
 }
@@ -148,16 +149,13 @@ export function mountShell(parent: HTMLElement, deps: ShellDeps): ShellHandle {
   // ---------- functional controls (sound / quality / reduced-motion / ledger) ----------
   const muteBtn = el('button', { type: 'button', 'aria-pressed': 'false' }) as HTMLButtonElement;
   function syncMute(): void {
-    const on = deps.audio.isEnabled();
+    const on = deps.sound.isEnabled();
     muteBtn.setAttribute('aria-pressed', String(on));
     muteBtn.textContent = on ? '🔊 Sound on' : '🔇 Sound off';
   }
   syncMute();
   muteBtn.addEventListener('click', () => {
-    void deps.audio.toggle().then((on) => {
-      store.getState().updateSettings({ muted: !on });
-      syncMute();
-    });
+    void deps.sound.set(!deps.sound.isEnabled()).then(syncMute);
   });
 
   const qualitySelect = el('select', { 'aria-label': 'Graphics quality' }, [
@@ -176,7 +174,9 @@ export function mountShell(parent: HTMLElement, deps: ShellDeps): ShellHandle {
   }) as HTMLInputElement;
   reducedCb.checked = store.getState().settings.reducedMotion;
   reducedCb.addEventListener('change', () => {
-    store.getState().updateSettings({ reducedMotion: reducedCb.checked });
+    // An explicit choice here overrides the OS preference (Settings can
+    // switch back to "Follow system").
+    store.getState().setMotionPreference(reducedCb.checked ? 'reduce' : 'full');
   });
   const reducedLabel = el('label', { for: 'shell-reduced-motion', class: 'reduced-label' }, [
     reducedCb,
@@ -223,6 +223,7 @@ export function mountShell(parent: HTMLElement, deps: ShellDeps): ShellHandle {
     const st = store.getState().settings;
     if (qualitySelect.value !== st.quality) qualitySelect.value = st.quality;
     if (reducedCb.checked !== st.reducedMotion) reducedCb.checked = st.reducedMotion;
+    syncMute();
     if (searchInput.value !== store.getState().view.filter.search) {
       searchInput.value = store.getState().view.filter.search;
     }

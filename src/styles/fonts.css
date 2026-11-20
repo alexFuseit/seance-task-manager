@@ -1,0 +1,12 @@
+/*
+ * Self-hosted OFL typefaces (no external CDN — tech steering).
+ * Vite resolves these @fontsource packages at build time and emits the .woff2
+ * files into dist/assets, so the deployed app makes no font network calls to
+ * third parties. Only the Latin subset is loaded (covers "é" in Séance).
+ * Licenses: assets/licenses/Cinzel-OFL.txt, assets/licenses/EB-Garamond-OFL.txt.
+ */
+@import '@fontsource/cinzel/latin-400.css';
+@import '@fontsource/cinzel/latin-700.css';
+@import '@fontsource/eb-garamond/latin-400.css';
+@import '@fontsource/eb-garamond/latin-400-italic.css';
+@import '@fontsource/eb-garamond/latin-600.css';

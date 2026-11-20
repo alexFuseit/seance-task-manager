@@ -27,8 +27,9 @@
   --ink-soft: #4a3a28;
   --edge: #8a6d44;
   --accent: var(--violet);
-  --font-serif: 'Georgia', 'Times New Roman', serif;
-  --font-ui: 'Georgia', 'Times New Roman', serif;
+  --font-display: 'Cinzel', 'Georgia', serif; /* OFL — headings, brand */
+  --font-serif: 'EB Garamond', 'Georgia', 'Times New Roman', serif; /* OFL */
+  --font-ui: 'EB Garamond', 'Georgia', 'Times New Roman', serif;
 }
 
 * {
@@ -43,10 +44,20 @@ body {
 
 body {
   font-family: var(--font-ui);
+  font-size: 1.05rem; /* EB Garamond runs small; keep body text comfortable */
   color: var(--text);
   background:
     radial-gradient(ellipse at 60% 0%, #2a1f52 0%, var(--bg) 45%, var(--bg-deep) 100%) fixed;
   line-height: 1.5;
+}
+
+/* Display face (Cinzel, OFL) for headings and the brand mark. */
+h1,
+h2,
+.banner-text,
+.ov-label,
+.nav-label {
+  font-family: var(--font-display);
 }
 
 /* The sidebar is always present (fixed, 272px). Content is offset to clear it.
@@ -1026,8 +1037,10 @@ body.shell-active .canvas-host::after {
   border-right: 1px solid rgba(150, 120, 230, 0.3);
   border-bottom: 1px solid rgba(150, 120, 230, 0.3);
 }
-.grave-label:hover {
+.grave-label:hover,
+.grave-label.hovered {
   box-shadow: 0 12px 30px rgba(139, 92, 246, 0.4);
+  border-color: rgba(167, 139, 250, 0.7);
 }
 .grave-label:focus-visible {
   outline: 3px solid var(--focus);
@@ -1348,6 +1361,48 @@ dialog.editor {
   color: var(--text);
 }
 dialog.editor::backdrop { background: rgba(8, 5, 18, 0.7); }
+
+/* Inline validation errors (announced via role="alert"). */
+.field-error {
+  margin: 0.15rem 0 0;
+  min-height: 0;
+  color: #fca5a5;
+  font-size: 0.85rem;
+}
+.field-error:empty { display: none; }
+input[aria-invalid='true'] {
+  border-color: #f87171;
+  box-shadow: 0 0 0 2px rgba(248, 113, 113, 0.35);
+}
+
+/* Settings / About dialogs */
+dialog.app-dialog { width: min(560px, 94vw); max-height: 88vh; overflow: auto; }
+dialog.app-dialog h3 {
+  margin: 0.9rem 0 0.35rem;
+  font-family: var(--font-display);
+  font-size: 1.05rem;
+  color: var(--violet-bright);
+}
+dialog.app-dialog p { margin: 0.35rem 0; }
+.dialog-body { display: flex; flex-direction: column; gap: 0.8rem; }
+.setting-hint { color: var(--text-soft); font-size: 0.85rem; margin: 0.2rem 0 0; }
+.setting-group {
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  padding: 0.6rem 0.8rem 0.7rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.setting-group legend { padding: 0 0.3rem; color: var(--text-soft); }
+.about-legend {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+  gap: 0.3rem 1rem;
+  margin: 0;
+}
+.about-legend dt { color: var(--text); }
+.about-legend dd { margin: 0; color: var(--text-soft); }
 
 @media (max-width: 900px) {
   .ledger-banner { grid-template-columns: 1fr; gap: 0.75rem; justify-items: center; }

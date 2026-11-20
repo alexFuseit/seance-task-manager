@@ -3,6 +3,7 @@
  * lazily-loaded 3D graveyard), seeds sample graves on first run, and tracks the
  * reduced-motion preference.
  */
+import './styles/fonts.css';
 import './styles/main.css';
 import { createSeanceStore } from './store/task-store';
 import { seedIfEmpty } from './store/seed';
@@ -19,13 +20,13 @@ const store = createSeanceStore();
 // range of visual states (weathering, crows, spirit). No-op for returning users.
 seedIfEmpty(store);
 
-// Detect reduced-motion preference and record it in settings so later
-// (3D) milestones can honour it. Kept here so it runs once at startup.
+// Track the OS reduced-motion preference. The user's explicit choice
+// (Settings → Motion) overrides it; 'system' follows it live.
 if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
   const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
-  store.getState().updateSettings({ reducedMotion: mq.matches });
+  store.getState().setSystemReducedMotion(mq.matches);
   mq.addEventListener?.('change', (e) => {
-    store.getState().updateSettings({ reducedMotion: e.matches });
+    store.getState().setSystemReducedMotion(e.matches);
   });
 }
 

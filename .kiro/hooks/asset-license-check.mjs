@@ -17,7 +17,7 @@
  *  - Exit 0 => success (STDOUT captured, not shown).
  *  - Non-zero => STDERR shown to the user as a warning.
  */
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 // Drain STDIN so the pipe closes cleanly.
@@ -53,6 +53,26 @@ function walk(dir, out = []) {
     }
   }
   return out;
+}
+
+// Fonts arrive as npm packages (@fontsource/*), not files under assets/, so
+// check each one is named in CREDITS.md with its license file present.
+const fontProblems = [];
+try {
+  const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+  const credits = existsSync('CREDITS.md') ? readFileSync('CREDITS.md', 'utf8').toLowerCase() : '';
+  for (const dep of Object.keys(pkg.dependencies ?? {})) {
+    if (!dep.startsWith('@fontsource/')) continue;
+    const family = dep.slice('@fontsource/'.length).replace(/-/g, ' ');
+    if (!credits.includes(family)) fontProblems.push(`${dep} is not listed in CREDITS.md`);
+  }
+} catch {
+  /* no package.json yet — nothing to check */
+}
+if (fontProblems.length > 0) {
+  process.stderr.write(`[seance assets] Font licensing gaps:\n`);
+  for (const p of fontProblems) process.stderr.write(`  - ${p}\n`);
+  process.exit(1);
 }
 
 if (!existsSync('assets')) {

@@ -1,8 +1,8 @@
 /**
  * App shell — owns the persistent gothic sidebar (shared by both screens), the
  * view toggle between the 3D graveyard (wrapped in shell.ts chrome) and the 2D
- * ledger, and the function-first fallback: if WebGL is unavailable the app
- * stays on the ledger (Requirement 7.3).
+ * ledger, the Settings/About dialogs, and the function-first fallback: if
+ * WebGL is unavailable the app stays on the ledger (Requirement 7.3).
  *
  * The ledger is always mounted (canonical accessible surface). The 3D scene and
  * its chrome are created lazily the first time the graveyard view is shown.
@@ -11,6 +11,7 @@ import { type SeanceStore } from '../store/task-store';
 import { mountLedger, type LedgerHandle } from './ledger';
 import { mountShell, type ShellHandle } from './shell';
 import { mountSidebar, type SidebarHandle, type NavKey } from './sidebar';
+import { mountAboutDialog, mountSettingsDialog, type SoundControl } from './settings';
 import { el } from './dom';
 import { isWebGLAvailable } from '../three/webgl';
 import { createAmbientAudio } from '../audio/ambient';
@@ -23,12 +24,49 @@ type View = 'graveyard' | 'ledger';
 export function mountApp(parent: HTMLElement, store: SeanceStore): () => void {
   const webgl = isWebGLAvailable();
   const audio = createAmbientAudio();
+  const cleanups: (() => void)[] = [];
+
+  // One sound control shared by the shell toggle and the Settings dialog, so
+  // the audio graph and the persisted `muted` setting never disagree.
+  const sound: SoundControl = {
+    isEnabled: () => audio.isEnabled(),
+    async set(on) {
+      if (on) await audio.enable();
+      else audio.disable();
+      const enabled = audio.isEnabled();
+      store.getState().updateSettings({ muted: !enabled });
+      return enabled;
+    },
+  };
+
+  // Audio is gesture-gated: if the user left sound on last time, resume it on
+  // their first interaction rather than autoplaying.
+  if (!store.getState().settings.muted) {
+    const resume = (): void => {
+      window.removeEventListener('pointerdown', resume);
+      window.removeEventListener('keydown', resume);
+      if (!store.getState().settings.muted) void sound.set(true);
+    };
+    window.addEventListener('pointerdown', resume);
+    window.addEventListener('keydown', resume);
+    cleanups.push(() => {
+      window.removeEventListener('pointerdown', resume);
+      window.removeEventListener('keydown', resume);
+    });
+  }
 
   // --- persistent sidebar (shared by both views) ---
   const sidebar: SidebarHandle = mountSidebar(parent, {
     store,
     onNavigate: (key) => handleNav(key),
   });
+
+  // --- dialogs ---
+  const settingsDialog = mountSettingsDialog(store, sound);
+  const aboutDialog = mountAboutDialog();
+  // Restore the sidebar highlight to the current view when a dialog closes.
+  settingsDialog.onClose(() => sidebar.setActive(activeNav()));
+  aboutDialog.onClose(() => sidebar.setActive(activeNav()));
 
   // --- 3D container (hidden until first shown); lives behind the chrome ---
   const canvasHost = el('div', { class: 'canvas-host', 'aria-hidden': 'true' });
@@ -49,7 +87,6 @@ export function mountApp(parent: HTMLElement, store: SeanceStore): () => void {
   let reconciler: Reconciler | null = null;
   let world: World | null = null;
   let shell: ShellHandle | null = null;
-  let lastQuality = store.getState().settings.quality;
 
   async function ensureScene(): Promise<void> {
     if (scene) return;
@@ -61,36 +98,39 @@ export function mountApp(parent: HTMLElement, store: SeanceStore): () => void {
         import('../three/quality'),
       ]);
     if (scene) return;
-    scene = createScene(canvasHost, configForQuality(store.getState().settings.quality));
+    const s = createScene(canvasHost, configForQuality(store.getState().settings.quality));
+    scene = s;
     reconciler = createReconciler(
-      scene,
+      s,
       store,
       (taskId) => ledger.openEditor(taskId),
       () => ({ reducedMotion: store.getState().settings.reducedMotion }),
     );
-    world = createWorld({
-      scene: scene.scene,
-      fog: scene.fog,
-      moonLight: scene.moonLight,
-      rimLight: scene.rimLight,
-      hemiLight: scene.hemiLight,
-      sky: scene.sky,
+    const w = createWorld({
+      scene: s.scene,
+      fog: s.fog,
+      moonLight: s.moonLight,
+      rimLight: s.rimLight,
+      hemiLight: s.hemiLight,
+      sky: s.sky,
     });
-    const w = world;
-    const s = scene;
+    world = w;
+    // Only keep the loop at full rate while the atmosphere is still easing;
+    // once settled the scene can drop to its idle/ambient rate.
     s.onFrame((dt) => {
-      w.update(store, dt);
-      s.wake();
+      if (w.update(store, dt)) s.wake();
     });
 
-    void import('../three/quality').then(({ configForQuality: cfg }) => {
+    // Apply quality-tier changes at runtime.
+    let lastQuality = store.getState().settings.quality;
+    cleanups.push(
       store.subscribe((state) => {
         if (state.settings.quality !== lastQuality) {
           lastQuality = state.settings.quality;
-          scene?.applyConfig(cfg(state.settings.quality));
+          s.applyConfig(configForQuality(lastQuality));
         }
-      });
-    });
+      }),
+    );
   }
 
   function ensureShell(): void {
@@ -100,19 +140,18 @@ export function mountApp(parent: HTMLElement, store: SeanceStore): () => void {
       onSelect: (taskId) => ledger.openEditor(taskId),
       onAdd: () => void setView('ledger').then(() => ledger.focusQuickAdd()),
       onOpenLedger: () => void setView('ledger'),
-      audio,
+      sound,
       webglAvailable: webgl,
     });
   }
 
   async function setView(next: View): Promise<void> {
     view = next;
-    const inGraveyard = view === 'graveyard';
-    if (inGraveyard) {
+    const show = view === 'graveyard';
+    if (show) {
       await ensureScene();
       ensureShell();
     }
-    const show = view === 'graveyard';
 
     canvasHost.style.display = show ? 'block' : 'none';
     canvasHost.setAttribute('aria-hidden', show ? 'false' : 'true');
@@ -120,13 +159,17 @@ export function mountApp(parent: HTMLElement, store: SeanceStore): () => void {
     ledger.element.setAttribute('aria-hidden', show ? 'true' : 'false');
     shell?.setVisible(show);
     document.body.classList.toggle('shell-active', show);
-    sidebar.setActive(show ? 'graveyard' : currentLedgerNav);
+    sidebar.setActive(activeNav());
 
     if (show && scene) scene.wake();
   }
 
   // Which sidebar item is active while on the ledger (graveyard vs completed).
   let currentLedgerNav: NavKey = 'graveyard';
+
+  function activeNav(): NavKey {
+    return view === 'graveyard' ? 'graveyard' : currentLedgerNav;
+  }
 
   function handleNav(key: NavKey): void {
     switch (key) {
@@ -141,14 +184,14 @@ export function mountApp(parent: HTMLElement, store: SeanceStore): () => void {
         store.getState().setFilter({ status: 'completed' });
         currentLedgerNav = 'completed';
         void setView('ledger');
-        sidebar.setActive('completed');
         break;
       case 'settings':
+        sidebar.setActive('settings');
+        settingsDialog.open();
+        break;
       case 'about':
-        // Both route to the ledger (the functional surface) for now.
-        currentLedgerNav = 'graveyard';
-        void setView('ledger');
-        sidebar.setActive(key);
+        sidebar.setActive('about');
+        aboutDialog.open();
         break;
     }
   }
@@ -156,11 +199,15 @@ export function mountApp(parent: HTMLElement, store: SeanceStore): () => void {
   void setView('ledger');
 
   return function dispose(): void {
+    for (const c of cleanups) c();
     reconciler?.dispose();
     world?.dispose();
     scene?.dispose();
     shell?.unsubscribe();
+    shell?.element.remove();
     sidebar.unsubscribe();
+    settingsDialog.dispose();
+    aboutDialog.dispose();
     audio.dispose();
     ledger.unsubscribe();
     canvasHost.remove();

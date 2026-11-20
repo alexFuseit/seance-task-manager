@@ -10,14 +10,18 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:e2e": "npm run build && playwright test",
+    "shots": "node scripts/shoot.mjs"
   },
   "dependencies": {
+    "@fontsource/cinzel": "5.3.0",
+    "@fontsource/eb-garamond": "5.3.0",
     "three": "0.169.0",
     "zustand": "4.5.5"
   },
   "devDependencies": {
-    "@playwright/test": "^1.48.0",
+    "@playwright/test": "1.48.0",
     "@types/three": "0.169.0",
     "typescript": "5.5.4",
     "vite": "5.4.8",

@@ -1,16 +1,19 @@
 /**
  * Séance task store — the single source of truth (per tech steering).
  *
- * Built on `zustand/vanilla` so both the DOM overlay and the (future) Three.js
- * reconciler can `subscribe` without any framework coupling. State is persisted
- * to localStorage on every change.
+ * Built on `zustand/vanilla` so both the DOM overlay and the Three.js
+ * reconciler can `subscribe` without any framework coupling. Domain state
+ * (tasks + settings) is persisted to localStorage whenever it changes;
+ * view-only state (filter/sort/search) is never written.
  */
 import { createStore } from 'zustand/vanilla';
 import {
   type AppState,
+  type MotionPref,
   type Priority,
   type Settings,
   type Task,
+  resolveReducedMotion,
 } from '../model/types';
 import {
   type FilterOptions,
@@ -35,11 +38,16 @@ export type TaskPatch = Partial<
   Pick<Task, 'title' | 'notes' | 'priority' | 'dueDate'>
 >;
 
+/** Settings the user may change directly (reducedMotion is derived). */
+export type SettingsPatch = Partial<Omit<Settings, 'reducedMotion' | 'motion'>>;
+
 /** View state (filter/sort) lives alongside the domain data but is not persisted. */
 export interface ViewState {
   filter: FilterOptions;
   sortKey: SortKey;
   sortDir: SortDir;
+  /** live OS `prefers-reduced-motion` value (feeds settings.reducedMotion). */
+  systemReducedMotion: boolean;
 }
 
 export interface SeanceState extends AppState {
@@ -47,13 +55,16 @@ export interface SeanceState extends AppState {
 
   // --- CRUD ---
   addTask: (input: NewTaskInput) => Task;
+  /** Throws if `patch.title` is provided but empty after trimming. */
   updateTask: (id: string, patch: TaskPatch) => void;
   completeTask: (id: string) => void;
   reopenTask: (id: string) => void;
   deleteTask: (id: string) => void;
 
   // --- settings ---
-  updateSettings: (patch: Partial<Settings>) => void;
+  updateSettings: (patch: SettingsPatch) => void;
+  setMotionPreference: (pref: MotionPref) => void;
+  setSystemReducedMotion: (reduced: boolean) => void;
 
   // --- view ---
   setFilter: (patch: Partial<FilterOptions>) => void;
@@ -61,6 +72,8 @@ export interface SeanceState extends AppState {
 
   // --- bulk / io ---
   replaceState: (next: AppState) => void;
+  /** Add tasks whose ids are not already present; returns how many were added. */
+  mergeTasks: (incoming: readonly Task[]) => number;
   importJson: (json: string) => void;
   exportJson: () => string;
 
@@ -74,16 +87,17 @@ export interface SeanceState extends AppState {
   graveyardTasks: () => Task[];
 }
 
-/** Pick an unoccupied-ish plot on a simple spiral so graves don't all stack. */
-function nextPlot(tasks: Task[]): { x: number; z: number } {
-  const n = tasks.length;
-  const ring = Math.floor(Math.sqrt(n));
-  const idxInRing = n - ring * ring;
-  const spacing = 2.5;
-  return {
-    x: (idxInRing - ring) * spacing,
-    z: -ring * spacing,
-  };
+/** Validation error raised by store actions; the UI shows `message` to the user. */
+export class TaskValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TaskValidationError';
+  }
+}
+
+function withMotion(settings: Settings, system: boolean): Settings {
+  const reducedMotion = resolveReducedMotion(settings.motion, system);
+  return reducedMotion === settings.reducedMotion ? settings : { ...settings, reducedMotion };
 }
 
 export function createSeanceStore(initial: AppState = loadState()) {
@@ -93,12 +107,13 @@ export function createSeanceStore(initial: AppState = loadState()) {
       filter: defaultFilter(),
       sortKey: 'created',
       sortDir: 'desc',
+      systemReducedMotion: false,
     },
 
     addTask(input) {
       const title = input.title.trim();
       if (title.length === 0) {
-        throw new Error('Task title is required');
+        throw new TaskValidationError('Task title is required');
       }
       const now = new Date().toISOString();
       const task: Task = {
@@ -107,7 +122,6 @@ export function createSeanceStore(initial: AppState = loadState()) {
         priority: input.priority ?? 'medium',
         status: 'active',
         createdAt: now,
-        plot: nextPlot(get().tasks),
       };
       if (input.notes && input.notes.trim().length > 0) task.notes = input.notes.trim();
       if (input.dueDate) task.dueDate = input.dueDate;
@@ -117,14 +131,14 @@ export function createSeanceStore(initial: AppState = loadState()) {
     },
 
     updateTask(id, patch) {
+      if (patch.title !== undefined && patch.title.trim().length === 0) {
+        throw new TaskValidationError('Task title is required');
+      }
       set((s) => ({
         tasks: s.tasks.map((t) => {
           if (t.id !== id) return t;
           const next: Task = { ...t };
-          if (patch.title !== undefined) {
-            const trimmed = patch.title.trim();
-            if (trimmed.length > 0) next.title = trimmed;
-          }
+          if (patch.title !== undefined) next.title = patch.title.trim();
           if (patch.priority !== undefined) next.priority = patch.priority;
           // notes/dueDate can be cleared by passing '' / undefined
           if ('notes' in patch) {
@@ -166,7 +180,25 @@ export function createSeanceStore(initial: AppState = loadState()) {
     },
 
     updateSettings(patch) {
+      const cur = get().settings;
+      const changed = (Object.keys(patch) as (keyof SettingsPatch)[]).some(
+        (k) => patch[k] !== undefined && patch[k] !== cur[k],
+      );
+      if (!changed) return; // avoid a no-op persist + re-render
       set((s) => ({ settings: { ...s.settings, ...patch } }));
+    },
+
+    setMotionPreference(pref) {
+      const s = get();
+      if (s.settings.motion === pref) return;
+      set({ settings: withMotion({ ...s.settings, motion: pref }, s.view.systemReducedMotion) });
+    },
+
+    setSystemReducedMotion(reduced) {
+      const s = get();
+      const settings = withMotion(s.settings, reduced);
+      if (reduced === s.view.systemReducedMotion && settings === s.settings) return;
+      set({ view: { ...s.view, systemReducedMotion: reduced }, settings });
     },
 
     setFilter(patch) {
@@ -178,11 +210,18 @@ export function createSeanceStore(initial: AppState = loadState()) {
     },
 
     replaceState(next) {
-      set(() => ({
+      set((s) => ({
         schemaVersion: next.schemaVersion,
         tasks: next.tasks,
-        settings: next.settings,
+        settings: withMotion(next.settings, s.view.systemReducedMotion),
       }));
+    },
+
+    mergeTasks(incoming) {
+      const ids = new Set(get().tasks.map((t) => t.id));
+      const fresh = incoming.filter((t) => !ids.has(t.id));
+      if (fresh.length > 0) set((s) => ({ tasks: [...s.tasks, ...fresh] }));
+      return fresh.length;
     },
 
     importJson(json) {
@@ -220,9 +259,17 @@ export function createSeanceStore(initial: AppState = loadState()) {
     },
   }));
 
-  // Persist on every domain change (ignores view-only churn by snapshotting
-  // the persisted shape only).
-  store.subscribe((state) => {
+  // Persist only on domain changes. View-only churn (search keystrokes,
+  // filter/sort changes) leaves `tasks`/`settings` referentially unchanged
+  // because every action replaces only the slices it touches.
+  store.subscribe((state, prev) => {
+    if (
+      state.tasks === prev.tasks &&
+      state.settings === prev.settings &&
+      state.schemaVersion === prev.schemaVersion
+    ) {
+      return;
+    }
     saveState({
       schemaVersion: state.schemaVersion,
       tasks: state.tasks,

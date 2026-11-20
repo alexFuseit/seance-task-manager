@@ -34,7 +34,7 @@ export function isDueSoon(task: Task, now: number = Date.now()): boolean {
   return task.status === 'active' && dueState(task, now) === 'soon';
 }
 
-export function countOverdue(tasks: Task[], now: number = Date.now()): number {
+export function countOverdue(tasks: readonly Task[], now: number = Date.now()): number {
   return tasks.reduce((n, t) => (isOverdue(t, now) ? n + 1 : n), 0);
 }
 
@@ -49,7 +49,7 @@ export function defaultFilter(): FilterOptions {
   return { status: 'all', priority: 'all', due: 'any', search: '' };
 }
 
-function matchesSearch(task: Task, query: string): boolean {
+export function matchesSearch(task: Task, query: string): boolean {
   const q = query.trim().toLowerCase();
   if (q.length === 0) return true;
   if (task.title.toLowerCase().includes(q)) return true;

@@ -24,7 +24,6 @@ function mkTask(partial: Partial<Task> = {}): Task {
     priority: partial.priority ?? 'medium',
     status: partial.status ?? 'active',
     createdAt: partial.createdAt ?? new Date().toISOString(),
-    plot: partial.plot ?? { x: 0, z: 0 },
     ...(partial.dueDate ? { dueDate: partial.dueDate } : {}),
     ...(partial.notes ? { notes: partial.notes } : {}),
     ...(partial.completedAt ? { completedAt: partial.completedAt } : {}),

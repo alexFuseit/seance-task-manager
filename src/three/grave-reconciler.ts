@@ -4,31 +4,36 @@
  * change diffs tasks vs. the map:
  *   - new task      → build a grave, place it, play the rise animation
  *   - changed task  → update visual target + target position
- *   - removed task  → dispose geometry/materials and detach
+ *   - removed task  → exhume animation, then dispose per-grave materials
  *
- * M3 adds visual state encoding: the grave's visual is derived from the task's
- * due state and the active search term, graves re-lay-out (and ease to new
- * positions) when the sort order changes, and time-based effects (crow flaps,
- * circling flock, pacing spirit, glow pulse) run per frame.
+ * Visual state is derived from the task's due state and the active search
+ * term (grave-visual.ts); graves re-lay-out (easing to new positions) when the
+ * sort order changes; overdue graves are haunted by skeletons; time-based
+ * effects (crows, circling flock, pacing spirit) run per frame.
  *
- * Also owns pointer interaction: hover raycast shows the epitaph plaque; click
+ * Render-rate contract with scene.ts: transitions call `scene.wake()` (full
+ * rate); continuous decorative motion calls `scene.ambient()` (reduced idle
+ * rate); a fully settled yard lets the loop drop to its idle rate.
+ *
+ * Also owns pointer interaction: hover raycast drives the cursor; click
  * selects a grave and invokes onSelect (wired to the ledger's edit dialog).
  */
 import * as THREE from 'three';
 import { type SeanceStore } from '../store/task-store';
-import { type Task } from '../model/types';
-import { dueState } from '../model/query';
 import { type SceneHandle } from './scene';
 import {
   type GraveParts,
-  type GraveVisual,
+  Tick,
   applyGraveVisual,
   buildGrave,
   disposeGrave,
+  disposeSharedGraveResources,
+  setDecorationsEnabled,
   tickGrave,
 } from './grave';
-import { createPlaque, type Plaque } from './plaque';
-import { createLabelLayer, type LabelLayer } from './labels';
+import { layoutPosition, signature, visualOf } from './grave-visual';
+import { createLabelLayer, type LabelAnchor, type LabelLayer } from './labels';
+import { createSkeletons, type Haunt, type Skeletons } from './skeletons';
 import { type Effect, createGhost, createDustBurst } from './effects';
 
 type Transient = 'idle' | 'laying-to-rest' | 'exhuming';
@@ -50,6 +55,8 @@ interface GraveEntry {
   riseDelay: number;
   /** last-seen task status, to detect active→completed transitions. */
   lastStatus: 'active' | 'completed';
+  /** reusable label anchor (no per-frame allocation). */
+  label: LabelAnchor;
 }
 
 export interface Reconciler {
@@ -57,16 +64,12 @@ export interface Reconciler {
 }
 
 const RISE_SPEED = 2.2;
-const PLOT_SPACING = 4.2;
 const LAY_TO_REST_DUR = 1.6; // seconds — grave sinks + ghost rises
 const EXHUME_DUR = 1.1; // seconds — grave pulls up then crumbles
-
-/** Does the task match the (already-lowercased, non-empty) search term? */
-function taskMatches(task: Task, q: string): boolean {
-  if (task.title.toLowerCase().includes(q)) return true;
-  if (task.notes && task.notes.toLowerCase().includes(q)) return true;
-  return false;
-}
+/** Re-derive due states this often so tasks visibly *become* due/overdue. */
+const DUE_REFRESH_MS = 60_000;
+/** Camera movement (world units²) that triggers a decoration LOD re-rank. */
+const LOD_RERANK_DIST2 = 0.25;
 
 export function createReconciler(
   scene: SceneHandle,
@@ -74,11 +77,6 @@ export function createReconciler(
   onSelect: (taskId: string) => void,
   getOpts: () => { reducedMotion: boolean },
 ): Reconciler {
-  const opts = {
-    get reducedMotion() {
-      return getOpts().reducedMotion;
-    },
-  };
   const entries = new Map<string, GraveEntry>();
   /** entries playing their exhume animation before disposal. */
   const exhuming = new Set<GraveEntry>();
@@ -90,54 +88,26 @@ export function createReconciler(
   let pointerInside = false;
   let elapsed = 0;
 
-  const plaque: Plaque = createPlaque();
-  scene.scene.add(plaque.sprite);
   const dom = scene.renderer.domElement;
 
-  // HTML label layer (Option A) — task cards anchored to the 3D graves. Lives
-  // in the canvas host so it overlays the WebGL canvas.
+  // HTML label layer — task cards anchored to the 3D graves. Lives in the
+  // canvas host so it overlays the WebGL canvas.
   const labelHost = (dom.parentElement as HTMLElement) ?? dom;
   const labels: LabelLayer = createLabelLayer(labelHost, onSelect);
+  /** reused per frame; rebuilt only when the entry set changes. */
+  let labelOrder: LabelAnchor[] = [];
+  let labelOrderDirty = true;
 
-  function visualOf(task: Task, search: string): GraveVisual {
-    const q = search.trim().toLowerCase();
-    const searchActive = q.length > 0;
-    return {
-      priority: task.priority,
-      status: task.status,
-      due: dueState(task),
-      searchActive,
-      searchMatch: searchActive ? taskMatches(task, q) : false,
-    };
-  }
+  // Skeletons haunt overdue graves (one per overdue task, capped).
+  const skeletons: Skeletons = createSkeletons();
+  scene.graveyard.add(skeletons.group);
 
-  function signature(v: GraveVisual): string {
-    return `${v.priority}|${v.status}|${v.due}|${v.searchActive ? 1 : 0}|${
-      v.searchMatch ? 1 : 0
-    }`;
-  }
-
-  /**
-   * Compute a grave's plot from its index in the *sorted visible* list. Laid
-   * out as a wider, staggered field receding from the camera with a small
-   * deterministic jitter so the graveyard feels natural (not a rigid grid) and
-   * is worth roaming across with OrbitControls. Deterministic (index-seeded) so
-   * positions are stable between renders; the per-frame easing animates moves.
-   */
-  function layoutPosition(index: number): THREE.Vector3 {
-    const perRow = 5;
-    const row = Math.floor(index / perRow);
-    const col = index % perRow;
-    const offset = (row % 2) * (PLOT_SPACING / 2); // brick-stagger alternate rows
-    // seeded pseudo-random jitter in [-0.6, 0.6]
-    const jx = (Math.sin(index * 12.9898) * 43758.5453) % 1;
-    const jz = (Math.sin(index * 78.233) * 12543.4523) % 1;
-    const jitterX = (jx - Math.floor(jx) - 0.5) * 1.2;
-    const jitterZ = (jz - Math.floor(jz) - 0.5) * 1.2;
-    const x = (col - (perRow - 1) / 2) * PLOT_SPACING + offset + jitterX;
-    const z = -row * PLOT_SPACING + jitterZ;
-    return new THREE.Vector3(x, 0, z);
-  }
+  // Decoration LOD: nearest-N ranking, recomputed only when the camera moves
+  // or the set of graves changes (not every frame).
+  const decorEligible = new Set<string>();
+  const lastRankCam = new THREE.Vector3(Infinity, Infinity, Infinity);
+  let rankDirty = true;
+  const rankScratch: { id: string; d: number }[] = [];
 
   function spawnEffect(fx: Effect): void {
     scene.scene.add(fx.object);
@@ -145,7 +115,7 @@ export function createReconciler(
   }
 
   function startLayToRest(entry: GraveEntry): void {
-    if (opts.reducedMotion) return; // instant state change under reduced motion
+    if (getOpts().reducedMotion) return; // instant state change under reduced motion
     entry.transient = 'laying-to-rest';
     entry.anim = 0;
     const p = entry.parts.group.position;
@@ -155,8 +125,13 @@ export function createReconciler(
   function startExhume(entry: GraveEntry): void {
     entries.delete(entry.taskId);
     labels.remove(entry.taskId);
-    if (hovered === entry.taskId) hideHover();
-    if (opts.reducedMotion) {
+    labelOrderDirty = true;
+    rankDirty = true;
+    if (hovered === entry.taskId) {
+      hovered = null;
+      labels.setHovered(null);
+    }
+    if (getOpts().reducedMotion) {
       scene.graveyard.remove(entry.parts.group);
       disposeGrave(entry.parts);
       return;
@@ -169,16 +144,23 @@ export function createReconciler(
   }
 
   function reconcile(): void {
-    const search = store.getState().view.filter.search;
-    const tasks = store.getState().graveyardTasks();
+    const state = store.getState();
+    const search = state.view.filter.search;
+    const tasks = state.graveyardTasks();
+    const reduced = getOpts().reducedMotion;
+    const now = Date.now();
     const seen = new Set<string>();
+    const haunts: Haunt[] = [];
 
     tasks.forEach((task, index) => {
       seen.add(task.id);
-      const visual = visualOf(task, search);
+      const visual = visualOf(task, search, now);
       const sig = signature(visual);
       const pos = layoutPosition(index);
       labels.upsert(task.id, task);
+      if (visual.due === 'overdue' && task.status === 'active') {
+        haunts.push({ id: task.id, x: pos.x, z: pos.z });
+      }
 
       const existing = entries.get(task.id);
       if (!existing) {
@@ -188,16 +170,16 @@ export function createReconciler(
         const entry: GraveEntry = {
           taskId: task.id,
           parts,
-          target: pos.clone(),
+          target: new THREE.Vector3(pos.x, 0, pos.z),
           rise: 1,
           sig,
           transient: 'idle',
           anim: 0,
           riseDelay: 0,
           lastStatus: task.status,
+          label: { taskId: task.id, anchor: new THREE.Vector3(), dist: 0 },
         };
-        if (opts.reducedMotion) {
-          entry.rise = 1;
+        if (reduced) {
           parts.group.position.set(pos.x, 0, pos.z);
         } else {
           entry.rise = 0;
@@ -207,6 +189,8 @@ export function createReconciler(
           parts.group.position.set(pos.x, -parts.height - 0.3, pos.z);
         }
         entries.set(task.id, entry);
+        labelOrderDirty = true;
+        rankDirty = true;
       } else {
         if (sig !== existing.sig) {
           applyGraveVisual(existing.parts, visual);
@@ -217,8 +201,11 @@ export function createReconciler(
           startLayToRest(existing);
         }
         existing.lastStatus = task.status;
-        existing.target.copy(pos);
-        if (opts.reducedMotion) {
+        if (existing.target.x !== pos.x || existing.target.z !== pos.z) {
+          existing.target.set(pos.x, 0, pos.z);
+          rankDirty = true;
+        }
+        if (reduced) {
           existing.parts.group.position.x = pos.x;
           existing.parts.group.position.z = pos.z;
         }
@@ -227,110 +214,119 @@ export function createReconciler(
 
     // Tasks gone from the store → exhume (deferred disposal) rather than snap.
     for (const [id, entry] of entries) {
-      if (!seen.has(id)) {
-        startExhume(entry);
-      }
+      if (!seen.has(id)) startExhume(entry);
     }
+
+    skeletons.setHaunts(haunts);
     scene.wake();
   }
 
-  function hideHover(): void {
-    hovered = null;
-    plaque.sprite.visible = false;
+  function rankDecorations(): void {
+    const cfg = scene.config;
+    decorEligible.clear();
+    if (getOpts().reducedMotion || !cfg.decorations || cfg.maxDecoratedGraves <= 0) return;
+    rankScratch.length = 0;
+    const cam = scene.camera.position;
+    for (const e of entries.values()) {
+      rankScratch.push({ id: e.taskId, d: e.target.distanceToSquared(cam) });
+    }
+    rankScratch.sort((a, b) => a.d - b.d);
+    const n = Math.min(rankScratch.length, cfg.maxDecoratedGraves);
+    for (let i = 0; i < n; i++) decorEligible.add(rankScratch[i]!.id);
   }
 
-  // --- per-frame: rise, re-layout easing, time-based effects, plaque ---
+  // --- per-frame: rise, re-layout easing, time-based effects, labels ---
+  let lastReduced = getOpts().reducedMotion;
+  let lastConfig = scene.config;
+
   const unregisterFrame = scene.onFrame((dt) => {
     elapsed += dt;
-    let anyActive = false;
-
-    // Decoration gating (Requirement 6 LOD): the quality tier may disable
-    // decorations entirely, and even when enabled we only decorate the nearest
-    // N graves so a large/distant backlog stays cheap.
+    let transitioning = false;
+    let ambient = false;
+    const reduced = getOpts().reducedMotion;
     const cfg = scene.config;
-    const decorEligible = new Set<string>();
-    // Reduced motion suppresses continuous decorative motion entirely.
-    if (!opts.reducedMotion && cfg.decorations && cfg.maxDecoratedGraves > 0) {
-      const byDistance = [...entries.values()]
-        .map((e) => ({
-          id: e.taskId,
-          d: e.parts.group.position.distanceToSquared(scene.camera.position),
-        }))
-        .sort((a, b) => a.d - b.d)
-        .slice(0, cfg.maxDecoratedGraves);
-      for (const { id } of byDistance) decorEligible.add(id);
+
+    // Re-rank decoration LOD only when the camera has moved, graves were
+    // added/removed/re-laid-out, or the quality/motion gating changed.
+    if (reduced !== lastReduced || cfg !== lastConfig) {
+      lastReduced = reduced;
+      lastConfig = cfg;
+      rankDirty = true;
     }
+    if (rankDirty || lastRankCam.distanceToSquared(scene.camera.position) > LOD_RERANK_DIST2) {
+      rankDecorations();
+      lastRankCam.copy(scene.camera.position);
+      rankDirty = false;
+    }
+
+    // Skeletons follow the same quality / reduced-motion gating.
+    const skeletonsOn = !reduced && cfg.decorations;
+    skeletons.setVisible(skeletonsOn);
+    if (skeletonsOn && skeletons.update(dt)) ambient = true;
 
     for (const entry of entries.values()) {
       const g = entry.parts.group;
-      // Apply decoration gating: hide crow/flock/spirit on ineligible graves.
-      setDecorationsEnabled(entry, decorEligible.has(entry.taskId));
+      setDecorationsEnabled(entry.parts, decorEligible.has(entry.taskId));
 
-      // Laying-to-rest: the grave sinks a little and its glow fades as the
-      // ghost (spawned at trigger) rises. Then it settles into completed look.
+      // Laying-to-rest: the ghost (spawned at trigger) rises while tickGrave
+      // fades the glow and sinks the stone into its mound (targetSunk).
       if (entry.transient === 'laying-to-rest') {
         entry.anim = Math.min(1, entry.anim + dt / LAY_TO_REST_DUR);
-        const e = easeOut(entry.anim);
-        g.position.y = -0.35 * e;
-        entry.parts.stoneMaterial.emissiveIntensity =
-          entry.parts.targetEmissive * (1 - e);
-        anyActive = true;
-        if (entry.anim >= 1) {
-          entry.transient = 'idle';
-          g.position.y = 0;
-        }
-        continue; // skip rise/relayout while playing
+        transitioning = true;
+        if (entry.anim >= 1) entry.transient = 'idle';
       }
 
       if (entry.rise < 1) {
         if (entry.riseDelay > 0) {
           entry.riseDelay -= dt;
           g.position.y = -(entry.parts.height + 0.3);
-          anyActive = true;
         } else {
+          if (entry.rise === 0) {
+            // Headstone breaks the soil → dust kicks up (Requirement 4.7).
+            spawnEffect(createDustBurst(new THREE.Vector3(g.position.x, 0.05, g.position.z), 60));
+          }
           entry.rise = Math.min(1, entry.rise + dt * RISE_SPEED);
           g.position.y = -(entry.parts.height + 0.3) * (1 - easeOut(entry.rise));
-          anyActive = true;
         }
-      } else {
+        transitioning = true;
+      } else if (g.position.y !== 0) {
         g.position.y = 0;
       }
 
-      // ease horizontal position toward target (re-layout animation)
-      const lerp = Math.min(1, dt * 4);
+      // Ease horizontal position toward target (re-layout animation).
       const dx = entry.target.x - g.position.x;
       const dz = entry.target.z - g.position.z;
       if (Math.abs(dx) > 0.001 || Math.abs(dz) > 0.001) {
+        const lerp = Math.min(1, dt * 4);
         g.position.x += dx * lerp;
         g.position.z += dz * lerp;
-        anyActive = true;
+        transitioning = true;
+      } else if (dx !== 0 || dz !== 0) {
+        g.position.x = entry.target.x;
+        g.position.z = entry.target.z;
       }
 
-      // material transitions + decorative effects
-      if (!opts.reducedMotion) {
-        if (tickGrave(entry.parts, dt, elapsed)) anyActive = true;
-      } else {
-        // still settle materials instantly when reduced motion
-        tickGrave(entry.parts, 1, elapsed);
-      }
+      // Material transitions + decorative effects. Under reduced motion,
+      // settle materials instantly (dt = 1) and never report ambient motion.
+      const t = tickGrave(entry.parts, reduced ? 1 : dt, elapsed);
+      if (t === Tick.Transition) transitioning = true;
+      else if (t === Tick.Ambient && !reduced) ambient = true;
     }
 
     // Exhuming graves: pull up out of the ground, then crumble (shrink+sink)
     // before disposal. The dust burst is a separate effect spawned at trigger.
-    for (const entry of [...exhuming]) {
+    for (const entry of exhuming) {
       entry.anim = Math.min(1, entry.anim + dt / EXHUME_DUR);
       const g = entry.parts.group;
       const a = entry.anim;
       if (a < 0.4) {
-        // pull up
-        g.position.y = (a / 0.4) * 0.6;
+        g.position.y = (a / 0.4) * 0.6; // pull up
       } else {
-        // crumble: drop and shrink to nothing
-        const c = (a - 0.4) / 0.6;
+        const c = (a - 0.4) / 0.6; // crumble: drop and shrink to nothing
         g.position.y = 0.6 - c * 1.4;
         g.scale.setScalar(Math.max(0.001, 1 - c));
       }
-      anyActive = true;
+      transitioning = true;
       if (entry.anim >= 1) {
         scene.graveyard.remove(entry.parts.group);
         disposeGrave(entry.parts);
@@ -339,9 +335,9 @@ export function createReconciler(
     }
 
     // Transient effects (ghosts, dust).
-    for (const fx of [...effects]) {
+    for (const fx of effects) {
       fx.update(dt);
-      anyActive = true;
+      transitioning = true;
       if (fx.done()) {
         scene.scene.remove(fx.object);
         fx.dispose();
@@ -349,72 +345,58 @@ export function createReconciler(
       }
     }
 
-    if (hovered) {
-      const entry = entries.get(hovered);
-      if (entry) {
-        const p = entry.parts.group.position;
-        plaque.sprite.position.set(p.x, p.y + entry.parts.height + 0.9, p.z);
-      }
+    // Project HTML labels onto the graves (anchors reused across frames).
+    if (labelOrderDirty) {
+      labelOrder = [...entries.values()].map((e) => e.label);
+      labelOrderDirty = false;
     }
-
-    // Project HTML labels onto the active (risen, non-exhuming) graves.
-    const order: { taskId: string; anchor: THREE.Vector3 }[] = [];
     for (const entry of entries.values()) {
       const p = entry.parts.group.position;
-      order.push({
-        taskId: entry.taskId,
-        anchor: new THREE.Vector3(p.x, p.y + entry.parts.height + 0.75, p.z),
-      });
+      entry.label.anchor.set(p.x, p.y + entry.parts.height + 0.75, p.z);
     }
-    labels.sync(scene.camera, order);
+    labels.sync(scene.camera, labelOrder);
 
-    // Keep the loop at full rate while anything is still animating
-    // (crows/spirit are continuous, so overdue/due-soon graves stay lively).
-    if (anyActive) scene.wake();
+    if (transitioning) scene.wake();
+    else if (ambient) scene.ambient();
   });
 
   // --- pointer interaction ---
+  const pickTargets: THREE.Object3D[] = [];
+
   function updatePointer(ev: MouseEvent): void {
     const rect = dom.getBoundingClientRect();
     pointer.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
     pointer.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
   }
 
-  function pick(): GraveEntry | null {
+  function pick(): string | null {
     raycaster.setFromCamera(pointer, scene.camera);
-    const meshes: THREE.Object3D[] = [];
-    for (const e of entries.values()) meshes.push(e.parts.stoneMesh);
-    const hits = raycaster.intersectObjects(meshes, false);
+    pickTargets.length = 0;
+    for (const e of entries.values()) pickTargets.push(e.parts.stoneMesh);
+    const hits = raycaster.intersectObjects(pickTargets, false);
     if (hits.length === 0) return null;
-    const hitMesh = hits[0]!.object;
-    for (const e of entries.values()) {
-      if (e.parts.stoneMesh === hitMesh) return e;
-    }
-    return null;
+    const group = hits[0]!.object.parent;
+    const id = group?.userData.taskId;
+    return typeof id === 'string' && entries.has(id) ? id : null;
   }
 
   function onPointerMove(ev: PointerEvent): void {
     pointerInside = true;
     updatePointer(ev);
     const hit = pick();
-    if (!hit) {
-      if (hovered) hideHover();
-      dom.style.cursor = 'grab';
-      return;
+    if (hit !== hovered) {
+      hovered = hit;
+      dom.style.cursor = hit ? 'pointer' : 'grab';
+      // The hovered grave's HTML card acts as the epitaph plaque (1.3).
+      labels.setHovered(hit);
+      scene.wake();
     }
-    dom.style.cursor = 'pointer';
-    if (hovered !== hit.taskId) {
-      hovered = hit.taskId;
-      // The HTML label layer already shows title/date/priority for nearby
-      // graves, so the canvas sprite plaque is kept hidden to avoid a doubled
-      // label. Hover still drives the cursor + highlight + click-to-select.
-    }
-    scene.wake();
   }
 
   function onPointerLeave(): void {
     pointerInside = false;
-    hideHover();
+    hovered = null;
+    labels.setHovered(null);
     dom.style.cursor = 'grab';
   }
 
@@ -422,7 +404,7 @@ export function createReconciler(
     if (!pointerInside) return;
     updatePointer(ev);
     const hit = pick();
-    if (hit) onSelect(hit.taskId);
+    if (hit) onSelect(hit);
   }
 
   dom.addEventListener('pointermove', onPointerMove);
@@ -432,9 +414,13 @@ export function createReconciler(
 
   reconcile();
   const unsubscribe = store.subscribe(reconcile);
+  // Time passes even when nothing is edited: re-derive due states so a task
+  // crossing its due date starts weathering / gets haunted without a reload.
+  const dueTimer = window.setInterval(reconcile, DUE_REFRESH_MS);
 
   function dispose(): void {
     unsubscribe();
+    window.clearInterval(dueTimer);
     unregisterFrame();
     dom.removeEventListener('pointermove', onPointerMove);
     dom.removeEventListener('pointerleave', onPointerLeave);
@@ -454,9 +440,10 @@ export function createReconciler(
       fx.dispose();
     }
     effects.clear();
-    scene.scene.remove(plaque.sprite);
-    plaque.dispose();
     labels.dispose();
+    scene.graveyard.remove(skeletons.group);
+    skeletons.dispose();
+    disposeSharedGraveResources();
   }
 
   return { dispose };
@@ -464,12 +451,4 @@ export function createReconciler(
 
 function easeOut(t: number): number {
   return 1 - Math.pow(1 - t, 3);
-}
-
-/** Apply decoration intent subject to LOD/quality eligibility. */
-function setDecorationsEnabled(entry: GraveEntry, eligible: boolean): void {
-  const p = entry.parts;
-  p.crow.visible = eligible && p.wantsCrow;
-  p.crowFlock.visible = eligible && p.wantsFlock;
-  p.spirit.visible = eligible && p.wantsSpirit;
 }

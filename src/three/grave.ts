@@ -10,24 +10,23 @@
  * Completed → sunken mossy mound, dormant, no glow (4.6).
  * Search → matches pulse brighter, non-matches dim (4.8).
  *
- * Material/scale changes are not snapped: the reconciler lerps the live values
- * toward the targets stored on GraveParts each frame, so priority edits and
- * search highlighting transition smoothly.
+ * Performance (Requirement 6.1): all geometry (stones per priority, mound,
+ * cracks, crow parts, spirit) and the stateless materials (crow, beak, crack
+ * levels) are built once and SHARED across every grave. Only the materials
+ * whose values animate per grave (stone glow/moss, mound tint, spirit opacity)
+ * are per-instance. Decorations (crow, flock, spirit) are built lazily the
+ * first time a grave's state calls for them, so a calm yard carries none.
+ *
+ * Material/scale changes are not snapped: tickGrave lerps the live values
+ * toward the targets stored on GraveParts each frame, so priority edits,
+ * completion and search highlighting transition smoothly.
  */
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { type Priority, type Status } from '../model/types';
-import { type DueState } from '../model/query';
+import { type Priority } from '../model/types';
+import { type GraveVisual } from './grave-visual';
 
-export interface GraveVisual {
-  priority: Priority;
-  status: Status;
-  due: DueState;
-  /** matches the active search term (0 when no search is active). */
-  searchMatch: boolean;
-  /** a search term is currently active (so non-matches should dim). */
-  searchActive: boolean;
-}
+export type { GraveVisual } from './grave-visual';
 
 export interface GraveParts {
   group: THREE.Group;
@@ -35,19 +34,23 @@ export interface GraveParts {
   stoneMaterial: THREE.MeshStandardMaterial;
   moundMaterial: THREE.MeshStandardMaterial;
   crack: THREE.Mesh;
-  /** a single crow that lands when due-soon; hidden otherwise. */
-  crow: THREE.Group;
-  /** circling crows for overdue; hidden otherwise. */
-  crowFlock: THREE.Group;
-  /** pacing spirit for overdue; hidden otherwise. */
-  spirit: THREE.Mesh;
-  /** nominal height of the marker, for plaque placement. */
+  /** a single crow that lands when due-soon; null until first needed. */
+  crow: THREE.Group | null;
+  /** circling crows for overdue; null until first needed. */
+  crowFlock: THREE.Group | null;
+  /** pacing spirit for overdue; null until first needed. */
+  spirit: THREE.Mesh | null;
+  /** priority whose silhouette the stone currently uses. */
+  priority: Priority;
+  /** nominal height of the marker, for label placement. */
   height: number;
 
-  // --- animation targets (lerped by the reconciler each frame) ---
+  // --- animation targets (lerped each frame by tickGrave) ---
   targetEmissive: number;
   targetMoss: number; // 0..1 blend toward moss colour
-  targetScale: number; // overall marker scale (dim-by-scale avoided; used for completed)
+  /** 1 = upright; completed graves sink + shrink into their mound. */
+  targetSunk: number;
+  sunk: number;
   /** phase offset so effects don't all tick in unison. */
   phase: number;
   /** what decorations the current state *wants* (before LOD/quality gating). */
@@ -55,6 +58,17 @@ export interface GraveParts {
   wantsFlock: boolean;
   wantsSpirit: boolean;
 }
+
+/** Result of a per-frame tick, used to drive the render-loop rate. */
+export const Tick = {
+  /** nothing changed — the grave is at rest. */
+  Settled: 0,
+  /** only continuous decorative motion (crows/spirit) is running. */
+  Ambient: 1,
+  /** a material/scale transition is in progress. */
+  Transition: 2,
+} as const;
+export type Tick = (typeof Tick)[keyof typeof Tick];
 
 const STONE_COLOR = new THREE.Color(0xb4b4bc);
 const MOSS_COLOR = new THREE.Color(0x63703f);
@@ -67,7 +81,96 @@ const GLOW: Record<Priority, { color: number; intensity: number }> = {
   low: { color: 0x9aa07a, intensity: 0.25 },
 };
 
-function stoneGeometry(priority: Priority): { geo: THREE.BufferGeometry; height: number } {
+// Scratch colours reused by tickGrave (no per-frame allocation).
+const scratchStone = new THREE.Color();
+const scratchSoil = new THREE.Color();
+
+// ---------------------------------------------------------------------------
+// Shared resources
+// ---------------------------------------------------------------------------
+
+interface StoneShape {
+  geo: THREE.BufferGeometry;
+  height: number;
+}
+
+interface SharedResources {
+  stones: Record<Priority, StoneShape>;
+  cracks: Record<Priority, THREE.PlaneGeometry>;
+  crackSoon: THREE.MeshBasicMaterial;
+  crackOverdue: THREE.MeshBasicMaterial;
+  mound: THREE.BufferGeometry;
+  crowBody: THREE.BufferGeometry;
+  crowHead: THREE.BufferGeometry;
+  crowBeak: THREE.BufferGeometry;
+  crowWing: THREE.BufferGeometry;
+  crowMat: THREE.MeshStandardMaterial;
+  beakMat: THREE.MeshStandardMaterial;
+  spirit: THREE.BufferGeometry;
+}
+
+let shared: SharedResources | null = null;
+
+function res(): SharedResources {
+  if (shared) return shared;
+  const stones = {
+    high: stoneGeometry('high'),
+    medium: stoneGeometry('medium'),
+    low: stoneGeometry('low'),
+  };
+  const crack = (p: Priority) => new THREE.PlaneGeometry(0.06, stones[p].height * 0.6);
+  // Low soil dome (scaled hemisphere) so each grave sits on turned earth.
+  const mound = new THREE.SphereGeometry(0.78, 20, 10, 0, Math.PI * 2, 0, Math.PI / 2);
+  mound.scale(1, 0.32, 1);
+  shared = {
+    stones,
+    cracks: { high: crack('high'), medium: crack('medium'), low: crack('low') },
+    crackSoon: new THREE.MeshBasicMaterial({
+      color: 0x0d0a06,
+      transparent: true,
+      opacity: 0.5,
+      depthWrite: false,
+    }),
+    crackOverdue: new THREE.MeshBasicMaterial({
+      color: 0x0d0a06,
+      transparent: true,
+      opacity: 0.9,
+      depthWrite: false,
+    }),
+    mound,
+    crowBody: new THREE.ConeGeometry(0.12, 0.42, 6),
+    crowHead: new THREE.SphereGeometry(0.1, 8, 6),
+    crowBeak: new THREE.ConeGeometry(0.03, 0.12, 4),
+    crowWing: new THREE.BoxGeometry(0.18, 0.02, 0.12),
+    crowMat: new THREE.MeshStandardMaterial({ color: 0x0b0b10, roughness: 0.6 }),
+    beakMat: new THREE.MeshStandardMaterial({ color: 0x8a6a1a }),
+    spirit: new THREE.CapsuleGeometry(0.22, 0.7, 4, 8),
+  };
+  return shared;
+}
+
+/** Free the shared grave resources (call when the whole 3D layer is torn down). */
+export function disposeSharedGraveResources(): void {
+  if (!shared) return;
+  const s = shared;
+  shared = null;
+  for (const p of ['high', 'medium', 'low'] as const) {
+    s.stones[p].geo.dispose();
+    s.cracks[p].dispose();
+  }
+  s.mound.dispose();
+  s.crowBody.dispose();
+  s.crowHead.dispose();
+  s.crowBeak.dispose();
+  s.crowWing.dispose();
+  s.spirit.dispose();
+  s.crackSoon.dispose();
+  s.crackOverdue.dispose();
+  s.crowMat.dispose();
+  s.beakMat.dispose();
+}
+
+function stoneGeometry(priority: Priority): StoneShape {
   switch (priority) {
     case 'high': {
       // Tall tapered obelisk with a pyramidal cap — a proper monument
@@ -156,33 +259,32 @@ function taperBox(geo: THREE.BufferGeometry, h: number, topScale: number): void 
   geo.computeVertexNormals();
 }
 
-/** A tiny low-poly crow (body + head + beak + wings). */
+// ---------------------------------------------------------------------------
+// Decorations (lazy)
+// ---------------------------------------------------------------------------
+
+/** A tiny low-poly crow (body + head + beak + wings) built from shared parts. */
 function buildCrow(): THREE.Group {
+  const r = res();
   const g = new THREE.Group();
-  const mat = new THREE.MeshStandardMaterial({ color: 0x0b0b10, roughness: 0.6 });
-  const body = new THREE.Mesh(new THREE.ConeGeometry(0.12, 0.42, 6), mat);
+  const body = new THREE.Mesh(r.crowBody, r.crowMat);
   body.rotation.z = Math.PI / 2;
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.1, 8, 6), mat);
+  const head = new THREE.Mesh(r.crowHead, r.crowMat);
   head.position.set(0.22, 0.05, 0);
-  const beak = new THREE.Mesh(
-    new THREE.ConeGeometry(0.03, 0.12, 4),
-    new THREE.MeshStandardMaterial({ color: 0x8a6a1a }),
-  );
+  const beak = new THREE.Mesh(r.crowBeak, r.beakMat);
   beak.rotation.z = -Math.PI / 2;
   beak.position.set(0.34, 0.05, 0);
-  const wingGeo = new THREE.BoxGeometry(0.18, 0.02, 0.12);
-  const wingL = new THREE.Mesh(wingGeo, mat);
+  const wingL = new THREE.Mesh(r.crowWing, r.crowMat);
   wingL.position.set(0, 0.04, 0.1);
-  const wingR = new THREE.Mesh(wingGeo, mat);
+  const wingR = new THREE.Mesh(r.crowWing, r.crowMat);
   wingR.position.set(0, 0.04, -0.1);
   g.add(body, head, beak, wingL, wingR);
   g.userData.wings = [wingL, wingR];
   return g;
 }
 
-/** A translucent pacing spirit (a tapered wisp). */
+/** A translucent pacing spirit (a tapered wisp). Material is per-grave. */
 function buildSpirit(): THREE.Mesh {
-  const geo = new THREE.CapsuleGeometry(0.22, 0.7, 4, 8);
   const mat = new THREE.MeshStandardMaterial({
     color: 0xbfe9ef,
     emissive: new THREE.Color(0x6fb9c4),
@@ -191,14 +293,76 @@ function buildSpirit(): THREE.Mesh {
     opacity: 0.0,
     depthWrite: false,
   });
-  const mesh = new THREE.Mesh(geo, mat);
+  const mesh = new THREE.Mesh(res().spirit, mat);
   mesh.position.y = 0.7;
   return mesh;
 }
 
+function ensureCrow(parts: GraveParts): THREE.Group {
+  if (!parts.crow) {
+    parts.crow = buildCrow();
+    parts.crow.scale.setScalar(0.9);
+    parts.crow.position.set(0, parts.height + 0.15, 0);
+    parts.group.add(parts.crow);
+  }
+  return parts.crow;
+}
+
+function ensureFlock(parts: GraveParts): THREE.Group {
+  if (!parts.crowFlock) {
+    parts.crowFlock = new THREE.Group();
+    for (let i = 0; i < 3; i++) {
+      const c = buildCrow();
+      c.scale.setScalar(0.7);
+      parts.crowFlock.add(c);
+    }
+    parts.group.add(parts.crowFlock);
+  }
+  return parts.crowFlock;
+}
+
+function ensureSpirit(parts: GraveParts): THREE.Mesh {
+  if (!parts.spirit) {
+    parts.spirit = buildSpirit();
+    parts.group.add(parts.spirit);
+  }
+  return parts.spirit;
+}
+
+/**
+ * Apply decoration intent subject to LOD/quality eligibility. Decorations are
+ * only constructed when actually shown.
+ */
+export function setDecorationsEnabled(parts: GraveParts, eligible: boolean): void {
+  const crow = eligible && parts.wantsCrow;
+  const flock = eligible && parts.wantsFlock;
+  const spirit = eligible && parts.wantsSpirit;
+  if (crow) ensureCrow(parts).visible = true;
+  else if (parts.crow) parts.crow.visible = false;
+  if (flock) ensureFlock(parts).visible = true;
+  else if (parts.crowFlock) parts.crowFlock.visible = false;
+  if (spirit) ensureSpirit(parts).visible = true;
+  else if (parts.spirit) parts.spirit.visible = false;
+}
+
+// ---------------------------------------------------------------------------
+// Build / apply / tick / dispose
+// ---------------------------------------------------------------------------
+
+function setSilhouette(parts: GraveParts, priority: Priority): void {
+  const r = res();
+  const { geo, height } = r.stones[priority];
+  parts.priority = priority;
+  parts.height = height;
+  parts.stoneMesh.geometry = geo;
+  parts.crack.geometry = r.cracks[priority];
+  parts.crack.position.set(0.08, height * 0.5, 0.085);
+  if (parts.crow) parts.crow.position.y = height + 0.15;
+}
+
 export function buildGrave(visual: GraveVisual): GraveParts {
+  const r = res();
   const group = new THREE.Group();
-  const { geo, height } = stoneGeometry(visual.priority);
 
   const stoneMaterial = new THREE.MeshStandardMaterial({
     color: STONE_COLOR.clone(),
@@ -207,51 +371,25 @@ export function buildGrave(visual: GraveVisual): GraveParts {
     emissive: new THREE.Color(GLOW[visual.priority].color),
     emissiveIntensity: 0,
   });
-  const stoneMesh = new THREE.Mesh(geo, stoneMaterial);
+  const stoneMesh = new THREE.Mesh(r.stones[visual.priority].geo, stoneMaterial);
   stoneMesh.castShadow = true;
   stoneMesh.receiveShadow = true;
 
-  // Crack overlay — a thin dark fissure line hugging the stone face.
-  const crackMat = new THREE.MeshBasicMaterial({
-    color: 0x0d0a06,
-    transparent: true,
-    opacity: 0,
-    depthWrite: false,
-  });
-  const crack = new THREE.Mesh(new THREE.PlaneGeometry(0.06, height * 0.6), crackMat);
-  crack.position.set(0.08, height * 0.5, 0.085);
+  // Crack overlay — a thin dark fissure line hugging the stone face. Uses one
+  // of two shared opacity-level materials; hidden when the stone is intact.
+  const crack = new THREE.Mesh(r.cracks[visual.priority], r.crackSoon);
   crack.rotation.z = 0.35;
+  crack.visible = false;
   stoneMesh.add(crack);
 
   const moundMaterial = new THREE.MeshStandardMaterial({
     color: SOIL_COLOR.clone(),
     roughness: 1,
   });
-  // Low soil dome (scaled hemisphere) rather than a flat disc, so each grave
-  // sits on a believable turned-earth mound.
-  const moundGeo = new THREE.SphereGeometry(0.78, 20, 10, 0, Math.PI * 2, 0, Math.PI / 2);
-  moundGeo.scale(1, 0.32, 1);
-  const mound = new THREE.Mesh(moundGeo, moundMaterial);
-  mound.position.y = 0.0;
+  const mound = new THREE.Mesh(r.mound, moundMaterial);
   mound.receiveShadow = true;
 
-  const crow = buildCrow();
-  crow.visible = false;
-  crow.position.set(0, height + 0.15, 0);
-  crow.scale.setScalar(0.9);
-
-  const crowFlock = new THREE.Group();
-  crowFlock.visible = false;
-  for (let i = 0; i < 3; i++) {
-    const c = buildCrow();
-    c.scale.setScalar(0.7);
-    crowFlock.add(c);
-  }
-
-  const spirit = buildSpirit();
-  spirit.visible = false;
-
-  group.add(mound, stoneMesh, crow, crowFlock, spirit);
+  group.add(mound, stoneMesh);
 
   const parts: GraveParts = {
     group,
@@ -259,36 +397,41 @@ export function buildGrave(visual: GraveVisual): GraveParts {
     stoneMaterial,
     moundMaterial,
     crack,
-    crow,
-    crowFlock,
-    spirit,
-    height,
+    crow: null,
+    crowFlock: null,
+    spirit: null,
+    priority: visual.priority,
+    height: r.stones[visual.priority].height,
     targetEmissive: 0,
     targetMoss: 0,
-    targetScale: 1,
+    targetSunk: 0,
+    sunk: 0,
     phase: Math.random() * Math.PI * 2,
     wantsCrow: false,
     wantsFlock: false,
     wantsSpirit: false,
   };
+  setSilhouette(parts, visual.priority);
 
   applyGraveVisual(parts, visual);
   // Snap transitionable values on first build so there is no initial lerp flash.
   stoneMaterial.emissiveIntensity = parts.targetEmissive;
-  if (visual.status === 'completed') {
-    stoneMesh.scale.setScalar(0.85);
-    stoneMesh.position.y = -height * 0.35;
-  }
+  stoneMaterial.color.copy(STONE_COLOR).lerp(MOSS_COLOR, parts.targetMoss);
+  moundMaterial.color.copy(SOIL_COLOR).lerp(SOIL_DARK, parts.targetMoss);
+  parts.sunk = parts.targetSunk;
+  applySunk(parts);
   return parts;
 }
 
 /**
- * Recompute animation targets + toggle decorative objects for a visual state.
- * Does NOT snap live material values — the reconciler lerps toward the targets.
+ * Recompute animation targets for a visual state (and swap the silhouette if
+ * the priority changed). Does NOT snap live values — tickGrave lerps them.
  */
 export function applyGraveVisual(parts: GraveParts, visual: GraveVisual): void {
   const completed = visual.status === 'completed';
   const base = GLOW[visual.priority];
+
+  if (visual.priority !== parts.priority) setSilhouette(parts, visual.priority);
 
   // Glow target: dormant when completed; dimmed when a search excludes it;
   // boosted when it matches an active search.
@@ -306,94 +449,122 @@ export function applyGraveVisual(parts: GraveParts, visual: GraveVisual): void {
   else if (visual.due === 'soon') moss = 0.35;
   parts.targetMoss = moss;
 
-  // Crack intensity (opacity target lives on the crack material directly).
-  const crackMat = parts.crack.material as THREE.MeshBasicMaterial;
-  crackMat.opacity =
-    completed ? 0 : visual.due === 'overdue' ? 0.9 : visual.due === 'soon' ? 0.5 : 0;
-
-  // Decorative objects — record INTENT; the reconciler applies LOD/quality
-  // gating to decide final visibility.
-  const dueSoon = !completed && visual.due === 'soon';
+  // Crack: shared material per weathering level.
   const overdue = !completed && visual.due === 'overdue';
+  const dueSoon = !completed && visual.due === 'soon';
+  parts.crack.visible = overdue || dueSoon;
+  parts.crack.material = overdue ? res().crackOverdue : res().crackSoon;
+
+  // Completed graves sink into their mound (and rise again if reopened).
+  parts.targetSunk = completed ? 1 : 0;
+
+  // Decorations — record INTENT; the reconciler applies LOD/quality gating
+  // via setDecorationsEnabled to decide final visibility.
   parts.wantsCrow = dueSoon;
   parts.wantsFlock = overdue;
   parts.wantsSpirit = overdue;
-  parts.crow.visible = dueSoon;
-  parts.crowFlock.visible = overdue;
-  parts.spirit.visible = overdue;
+}
 
-  parts.targetScale = 1;
+function applySunk(parts: GraveParts): void {
+  parts.stoneMesh.scale.setScalar(1 - 0.15 * parts.sunk);
+  parts.stoneMesh.position.y = -parts.height * 0.35 * parts.sunk;
 }
 
 /** Per-frame animation: lerp materials toward targets and tick effects. */
-export function tickGrave(parts: GraveParts, dt: number, time: number): boolean {
-  let active = false;
+export function tickGrave(parts: GraveParts, dt: number, time: number): Tick {
+  let state: Tick = Tick.Settled;
   const mat = parts.stoneMaterial;
+  const k = Math.min(1, dt * 6);
 
   // Smoothly approach emissive target.
-  const k = Math.min(1, dt * 6);
-  if (Math.abs(mat.emissiveIntensity - parts.targetEmissive) > 0.001) {
-    mat.emissiveIntensity += (parts.targetEmissive - mat.emissiveIntensity) * k;
-    active = true;
+  const de = parts.targetEmissive - mat.emissiveIntensity;
+  if (Math.abs(de) > 0.001) {
+    mat.emissiveIntensity += de * k;
+    state = Tick.Transition;
+  } else {
+    mat.emissiveIntensity = parts.targetEmissive;
   }
 
   // Blend stone/mound colour toward moss.
-  const targetStone = STONE_COLOR.clone().lerp(MOSS_COLOR, parts.targetMoss);
-  if (!mat.color.equals(targetStone)) {
-    mat.color.lerp(targetStone, k);
-    active = true;
+  scratchStone.copy(STONE_COLOR).lerp(MOSS_COLOR, parts.targetMoss);
+  if (!colorsClose(mat.color, scratchStone)) {
+    mat.color.lerp(scratchStone, k);
+    scratchSoil.copy(SOIL_COLOR).lerp(SOIL_DARK, parts.targetMoss);
+    parts.moundMaterial.color.lerp(scratchSoil, k);
+    state = Tick.Transition;
   }
-  const targetSoil = SOIL_COLOR.clone().lerp(SOIL_DARK, parts.targetMoss);
-  parts.moundMaterial.color.lerp(targetSoil, k);
+
+  // Sink / un-sink the stone (completion + reopen).
+  const ds = parts.targetSunk - parts.sunk;
+  if (Math.abs(ds) > 0.001) {
+    parts.sunk += ds * Math.min(1, dt * 3);
+    applySunk(parts);
+    state = Tick.Transition;
+  } else if (parts.sunk !== parts.targetSunk) {
+    parts.sunk = parts.targetSunk;
+    applySunk(parts);
+  }
+
+  let ambient = false;
 
   // Crow bobbing when visible (due soon).
-  if (parts.crow.visible) {
+  const crow = parts.crow;
+  if (crow && crow.visible) {
     const bob = Math.sin(time * 2 + parts.phase) * 0.04;
-    parts.crow.position.y = parts.height + 0.15 + bob;
-    const wings = parts.crow.userData.wings as THREE.Mesh[] | undefined;
+    crow.position.y = parts.height + 0.15 + bob;
+    const wings = crow.userData.wings as THREE.Mesh[] | undefined;
     if (wings) {
       const flap = Math.sin(time * 3 + parts.phase) * 0.15;
       wings[0]!.rotation.x = flap;
       wings[1]!.rotation.x = -flap;
     }
-    active = true;
+    ambient = true;
   }
 
   // Overdue: circling crow flock + pacing glowing spirit.
-  if (parts.crowFlock.visible) {
+  const flock = parts.crowFlock;
+  if (flock && flock.visible) {
     const r = 1.4;
-    parts.crowFlock.children.forEach((c, i) => {
+    const kids = flock.children;
+    for (let i = 0; i < kids.length; i++) {
+      const c = kids[i]!;
       const a = time * 0.9 + (i * Math.PI * 2) / 3 + parts.phase;
-      c.position.set(Math.cos(a) * r, parts.height + 0.8 + Math.sin(time + i) * 0.15, Math.sin(a) * r);
+      c.position.set(
+        Math.cos(a) * r,
+        parts.height + 0.8 + Math.sin(time + i) * 0.15,
+        Math.sin(a) * r,
+      );
       c.rotation.y = -a + Math.PI / 2;
-      const wings = (c as THREE.Group).userData.wings as THREE.Mesh[] | undefined;
+      const wings = c.userData.wings as THREE.Mesh[] | undefined;
       if (wings) {
         const flap = Math.sin(time * 8 + i) * 0.5;
         wings[0]!.rotation.x = flap;
         wings[1]!.rotation.x = -flap;
       }
-    });
-    active = true;
+    }
+    ambient = true;
   }
-  if (parts.spirit.visible) {
-    const sm = parts.spirit.material as THREE.MeshStandardMaterial;
+  const spirit = parts.spirit;
+  if (spirit && spirit.visible) {
+    const sm = spirit.material as THREE.MeshStandardMaterial;
     sm.opacity = 0.35 + Math.sin(time * 1.5 + parts.phase) * 0.12;
     // pace left-right beside the grave
-    parts.spirit.position.x = Math.sin(time * 0.8 + parts.phase) * 0.9;
-    parts.spirit.position.y = 0.7 + Math.sin(time * 2) * 0.05;
-    active = true;
+    spirit.position.x = Math.sin(time * 0.8 + parts.phase) * 0.9;
+    spirit.position.y = 0.7 + Math.sin(time * 2) * 0.05;
+    ambient = true;
   }
 
-  return active;
+  if (state === Tick.Settled && ambient) state = Tick.Ambient;
+  return state;
 }
 
+function colorsClose(a: THREE.Color, b: THREE.Color): boolean {
+  return Math.abs(a.r - b.r) + Math.abs(a.g - b.g) + Math.abs(a.b - b.b) < 0.002;
+}
+
+/** Dispose the per-grave materials. Shared geometry/materials are kept. */
 export function disposeGrave(parts: GraveParts): void {
-  parts.group.traverse((obj) => {
-    if (obj instanceof THREE.Mesh) {
-      obj.geometry.dispose();
-      const m = obj.material;
-      if (Array.isArray(m)) m.forEach((x) => x.dispose());
-      else m.dispose();
-    }
-  });
+  parts.stoneMaterial.dispose();
+  parts.moundMaterial.dispose();
+  if (parts.spirit) (parts.spirit.material as THREE.Material).dispose();
 }

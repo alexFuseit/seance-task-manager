@@ -8,6 +8,8 @@
 export type Priority = 'low' | 'medium' | 'high';
 export type Status = 'active' | 'completed';
 export type Quality = 'high' | 'medium' | 'low';
+/** User's motion preference; 'system' follows `prefers-reduced-motion`. */
+export type MotionPref = 'system' | 'reduce' | 'full';
 
 /** The current persisted schema version. Bump when the shape changes. */
 export const SCHEMA_VERSION = 1;
@@ -29,13 +31,17 @@ export interface Task {
   createdAt: string;
   /** ISO timestamp, set when completed */
   completedAt?: string;
-  /** grave position in the yard */
-  plot: { x: number; z: number };
 }
 
 export interface Settings {
   quality: Quality;
   muted: boolean;
+  /** the user's explicit choice (or 'system' to follow the OS). */
+  motion: MotionPref;
+  /**
+   * Effective reduced-motion flag, resolved from `motion` + the OS preference
+   * (see resolveReducedMotion). Read this everywhere; never set it directly.
+   */
   reducedMotion: boolean;
   showCompleted: boolean;
 }
@@ -60,9 +66,17 @@ export function defaultSettings(): Settings {
   return {
     quality: 'high',
     muted: true,
+    motion: 'system',
     reducedMotion: false,
     showCompleted: true,
   };
+}
+
+/** Resolve the effective reduced-motion flag from the preference + OS setting. */
+export function resolveReducedMotion(pref: MotionPref, systemPrefersReduced: boolean): boolean {
+  if (pref === 'reduce') return true;
+  if (pref === 'full') return false;
+  return systemPrefersReduced;
 }
 
 export function emptyState(): AppState {

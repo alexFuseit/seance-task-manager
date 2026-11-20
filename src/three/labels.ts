@@ -30,6 +30,16 @@ interface LabelEntry {
   pill: HTMLElement;
   icon: HTMLElement;
   lastClass: string;
+  /** whether the card is currently displayed (avoids redundant style writes). */
+  shown: boolean;
+}
+
+export interface LabelAnchor {
+  taskId: string;
+  /** world-space anchor point (top of the stone). */
+  anchor: THREE.Vector3;
+  /** scratch: camera distance, filled in by sync(). */
+  dist: number;
 }
 
 export interface LabelLayer {
@@ -39,13 +49,12 @@ export interface LabelLayer {
   remove: (taskId: string) => void;
   /**
    * Per-frame: project world positions to the screen and show the nearest N.
-   * `getAnchor` returns the world-space anchor point (top of the stone) for a
-   * given taskId, or null if it should be hidden this frame.
+   * The `order` array is sorted in place (callers reuse it across frames to
+   * avoid per-frame allocation).
    */
-  sync: (
-    camera: THREE.PerspectiveCamera,
-    order: { taskId: string; anchor: THREE.Vector3 }[],
-  ) => void;
+  sync: (camera: THREE.PerspectiveCamera, order: LabelAnchor[]) => void;
+  /** Mark the hovered grave: its card is always shown, crisp and on top. */
+  setHovered: (taskId: string | null) => void;
   dispose: () => void;
 }
 
@@ -78,6 +87,12 @@ export function createLabelLayer(
 
   const labels = new Map<string, LabelEntry>();
   const projected = new THREE.Vector3();
+  const shown = new Set<string>();
+  let hoveredId: string | null = null;
+
+  function setHovered(taskId: string | null): void {
+    hoveredId = taskId;
+  }
 
   function upsert(taskId: string, task: Task): void {
     let entry = labels.get(taskId);
@@ -97,7 +112,8 @@ export function createLabelLayer(
         onSelect(taskId);
       });
       layer.append(root);
-      entry = { root, title, date, pill, icon, lastClass: '' };
+      root.style.display = 'none';
+      entry = { root, title, date, pill, icon, lastClass: '', shown: false };
       labels.set(taskId, entry);
     }
 
@@ -141,53 +157,52 @@ export function createLabelLayer(
     labels.delete(taskId);
   }
 
-  function sync(
-    camera: THREE.PerspectiveCamera,
-    order: { taskId: string; anchor: THREE.Vector3 }[],
-  ): void {
+  function sync(camera: THREE.PerspectiveCamera, order: LabelAnchor[]): void {
     const w = container.clientWidth;
     const h = container.clientHeight;
 
-    // Rank by camera distance; only the nearest MAX_LABELS get shown.
-    const ranked = order
-      .map((o) => ({
-        ...o,
-        dist: o.anchor.distanceTo(camera.position),
-      }))
-      .sort((a, b) => a.dist - b.dist);
+    // Rank by camera distance; only the nearest MAX_LABELS in front of the
+    // camera get shown.
+    for (const o of order) o.dist = o.anchor.distanceTo(camera.position);
+    order.sort((a, b) => a.dist - b.dist);
 
-    const visible = new Set<string>();
-    for (let i = 0; i < ranked.length && visible.size < MAX_LABELS; i++) {
-      const item = ranked[i]!;
-      if (item.dist > MAX_LABEL_DISTANCE) break;
-      visible.add(item.taskId);
+    shown.clear();
+    for (let i = 0; i < order.length; i++) {
+      const item = order[i]!;
+      // Beyond the nearest-N budget only the hovered grave still gets a card
+      // (it doubles as the hover epitaph plaque, Requirement 1.3).
+      const isHovered = item.taskId === hoveredId;
+      if (!isHovered && (shown.size >= MAX_LABELS || item.dist > MAX_LABEL_DISTANCE)) continue;
+      const entry = labels.get(item.taskId);
+      if (!entry) continue;
+      projected.copy(item.anchor).project(camera);
+      if (projected.z > 1) continue; // behind the camera
+      const x = (projected.x * 0.5 + 0.5) * w;
+      const y = (-projected.y * 0.5 + 0.5) * h;
+      // Distance → scale + opacity falloff for depth cueing (hovered = crisp).
+      const t = isHovered ? 0 : THREE.MathUtils.clamp(item.dist / MAX_LABEL_DISTANCE, 0, 1);
+      const scale = THREE.MathUtils.lerp(1, 0.62, t);
+      const opacity = THREE.MathUtils.lerp(1, 0.45, t);
+      const style = entry.root.style;
+      if (!entry.shown) {
+        style.display = 'flex';
+        entry.shown = true;
+      }
+      style.left = `${x.toFixed(1)}px`;
+      style.top = `${y.toFixed(1)}px`;
+      style.transform = `translate(-50%, -100%) scale(${scale.toFixed(3)})`;
+      style.opacity = opacity.toFixed(3);
+      // nearer labels sit above farther ones; the hovered card tops them all
+      style.zIndex = isHovered ? '2000' : String(1000 - Math.round(item.dist * 10));
+      entry.root.classList.toggle('hovered', isHovered);
+      shown.add(item.taskId);
     }
 
     for (const [taskId, entry] of labels) {
-      const item = ranked.find((r) => r.taskId === taskId);
-      if (!item || !visible.has(taskId)) {
+      if (entry.shown && !shown.has(taskId)) {
         entry.root.style.display = 'none';
-        continue;
+        entry.shown = false;
       }
-      projected.copy(item.anchor).project(camera);
-      // Behind the camera (z > 1) → hide.
-      if (projected.z > 1) {
-        entry.root.style.display = 'none';
-        continue;
-      }
-      const x = (projected.x * 0.5 + 0.5) * w;
-      const y = (-projected.y * 0.5 + 0.5) * h;
-      // Distance → scale + opacity falloff for depth cueing.
-      const t = THREE.MathUtils.clamp(item.dist / MAX_LABEL_DISTANCE, 0, 1);
-      const scale = THREE.MathUtils.lerp(1, 0.62, t);
-      const opacity = THREE.MathUtils.lerp(1, 0.45, t);
-      entry.root.style.display = 'flex';
-      entry.root.style.left = `${x}px`;
-      entry.root.style.top = `${y}px`;
-      entry.root.style.transform = `translate(-50%, -100%) scale(${scale.toFixed(3)})`;
-      entry.root.style.opacity = opacity.toFixed(3);
-      // nearer labels sit above farther ones
-      entry.root.style.zIndex = String(1000 - Math.round(item.dist * 10));
     }
   }
 
@@ -197,5 +212,5 @@ export function createLabelLayer(
     layer.remove();
   }
 
-  return { upsert, remove, sync, dispose };
+  return { upsert, remove, sync, setHovered, dispose };
 }

@@ -154,12 +154,21 @@ export interface SceneHandle {
   applyConfig: (cfg: RenderConfig) => void;
   /** request a few active frames (e.g. after a store change or animation). */
   wake: () => void;
+  /**
+   * Signal (from a frame callback) that continuous ambient motion is on screen
+   * (crows, spirits, skeletons). When idle, the loop then runs at AMBIENT_FPS
+   * instead of IDLE_FPS — lively, but well below the full display rate.
+   */
+  ambient: () => void;
+  /** true when the loop is currently throttled (for tests/diagnostics). */
+  isIdle: () => boolean;
   /** register a per-frame callback; returns an unregister fn. */
   onFrame: (cb: (dt: number) => void) => () => void;
   dispose: () => void;
 }
 
-const IDLE_FPS = 8;
+const IDLE_FPS = 8; // nothing moving but the starfield twinkle
+const AMBIENT_FPS = 30; // continuous decorative motion only
 const ACTIVE_MS = 1200; // keep rendering at full rate this long after a wake
 
 export function createScene(container: HTMLElement, initialConfig: RenderConfig): SceneHandle {
@@ -223,8 +232,8 @@ export function createScene(container: HTMLElement, initialConfig: RenderConfig)
 
   // Overall base fill so the graveyard never goes pitch black. Cool tint so the
   // warm rim reads as a deliberate accent against it.
-  const ambient = new THREE.AmbientLight(0x7a86b8, 0.8);
-  scene.add(ambient);
+  const ambientLight = new THREE.AmbientLight(0x7a86b8, 0.8);
+  scene.add(ambientLight);
 
   const hemiLight = new THREE.HemisphereLight(0xa8b0e8, 0x3a2f5a, 1.05);
   scene.add(hemiLight);
@@ -271,10 +280,17 @@ export function createScene(container: HTMLElement, initialConfig: RenderConfig)
   let lastTime = performance.now();
   let lastActiveWake = performance.now();
   let idleAccum = 0;
+  let idle = false;
+  // Ambient motion requested during the previous executed frame.
+  let ambientActive = false;
+  let ambientRequested = false;
   const clock = new THREE.Clock();
 
   function wake(): void {
     lastActiveWake = performance.now();
+  }
+  function ambient(): void {
+    ambientRequested = true;
   }
   controls.addEventListener('start', wake);
   controls.addEventListener('change', wake);
@@ -285,13 +301,15 @@ export function createScene(container: HTMLElement, initialConfig: RenderConfig)
 
     const now = performance.now();
     const sinceWake = now - lastActiveWake;
-    const active = sinceWake < ACTIVE_MS;
+    idle = sinceWake >= ACTIVE_MS;
 
-    // When idle, throttle to IDLE_FPS by skipping frames.
-    if (!active) {
+    // When idle, throttle by skipping frames: AMBIENT_FPS if decorations are
+    // moving, otherwise IDLE_FPS.
+    if (idle) {
       idleAccum += now - lastTime;
       lastTime = now;
-      if (idleAccum < 1000 / IDLE_FPS) return;
+      const fps = ambientActive ? AMBIENT_FPS : IDLE_FPS;
+      if (idleAccum < 1000 / fps) return;
       idleAccum = 0;
     } else {
       lastTime = now;
@@ -299,7 +317,9 @@ export function createScene(container: HTMLElement, initialConfig: RenderConfig)
 
     const dt = clock.getDelta();
     controls.update();
+    ambientRequested = false;
     for (const cb of frameCbs) cb(dt);
+    ambientActive = ambientRequested;
     if (postfx && config.postFx) {
       postfx.render();
     } else {
@@ -399,6 +419,8 @@ export function createScene(container: HTMLElement, initialConfig: RenderConfig)
     },
     applyConfig,
     wake,
+    ambient,
+    isIdle: () => idle,
     onFrame,
     dispose,
   };

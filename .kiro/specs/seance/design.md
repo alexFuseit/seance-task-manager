@@ -34,9 +34,9 @@ add cost exactly during the hardest 20% (custom shaders, instancing, post-proces
 | Build/dev | **Vite** | Instant HMR, zero-config, static output for easy hosting |
 | 3D | **Three.js** (WebGL) | Direct control over scene, instancing, shaders |
 | Post-processing | **three `EffectComposer`** | Bloom, vignette, depth fog, film grain |
-| State | **Zustand (vanilla build)** + `persist` | ~1KB, framework-agnostic `subscribe`; DOM overlay and Three.js reconciler both listen; `persist` middleware syncs `localStorage` |
+| State | **Zustand (vanilla build)** | ~1KB, framework-agnostic `subscribe`; DOM overlay and Three.js reconciler both listen; a store subscriber syncs domain state to `localStorage` |
 | UI overlay | **Vanilla TS + CSS** | Small surface; gothic/parchment styling in plain CSS |
-| Fonts | Bundled gothic/serif typefaces (self-hosted) | No external font CDN; offline-friendly |
+| Fonts | Cinzel + EB Garamond (SIL OFL) via `@fontsource`, bundled by Vite | No external font CDN; offline-friendly |
 | Audio | **Web Audio API / `<audio>`** | Ambient loops, mute toggle, gesture-gated |
 | Build/Host | **Vite static build** → GitHub Pages / Netlify / Cloudflare Pages / S3+CloudFront | No server runtime |
 
@@ -83,7 +83,6 @@ interface Task {
   status: Status;
   createdAt: string;     // ISO
   completedAt?: string;  // ISO
-  plot: { x: number; z: number }; // grave position in the yard
 }
 
 interface AppState {
@@ -92,46 +91,61 @@ interface AppState {
   settings: {
     quality: 'high' | 'medium' | 'low';
     muted: boolean;
-    reducedMotion: boolean;
+    motion: 'system' | 'reduce' | 'full'; // user's explicit choice
+    reducedMotion: boolean;               // derived: motion + OS preference
     showCompleted: boolean;
   };
 }
 ```
 
 Persisted under key `seance.state.v1`. A migration step upgrades older `schemaVersion`
-payloads.
+payloads. Grave positions are **not** stored: they are derived from each task's index
+in the current sort order (`three/grave-visual.ts → layoutPosition`), so re-sorting
+re-lays-out the yard. Legacy payloads carrying a `plot` field are accepted and the
+field is dropped.
 
 ## 5. Scene Reconciliation
 
-- Maintain a `Map<taskId, GraveObject3D>`.
+- Maintain a `Map<taskId, GraveEntry>`.
 - On store change: diff tasks vs. map → create risers, update materials/glow, play
-  completion/exhume animations, free disposed geometry/materials.
-- Use `InstancedMesh` for shared grave meshes where possible; per-grave uniforms for
-  glow/weathering via instanced attributes.
+  completion/exhume animations, dispose per-grave materials.
+- Every grave shares one geometry per priority plus shared crow/crack materials;
+  only animated materials are per-grave. Decorations (crow, flock, spirit) are built
+  lazily when first shown. `InstancedMesh` was evaluated and deferred: the animated
+  per-grave values would need instanced attributes + custom shaders for little gain at
+  ~100 graves.
+- Due states are re-derived every minute so a task visibly *becomes* overdue.
+- Overdue graves are haunted by a skeleton each (max 4), so the skeleton count is a
+  direct read of the backlog.
 
 ## 6. Performance Strategy
 
-- Instanced grave meshes; shared materials; texture atlases.
-- Frustum culling + distance LOD (simplify distant graves, drop particles).
-- Quality tiers toggle post-processing, shadow resolution, particle counts, fog steps.
-- Pause rendering when tab hidden; throttle when idle.
+- Shared grave geometry/materials; lazy decorations (see §5).
+- Three.js frustum culling + distance LOD (decorations only on the nearest N graves).
+- Quality tiers toggle post-processing, shadow resolution, decorations, pixel ratio.
+- Pause rendering when the tab is hidden. Three render rates: full while anything
+  transitions or the user interacts; 30 fps when only ambient decorations move;
+  8 fps when the yard is fully settled.
 
 ## 7. Interaction Model
 
 - **Navigation**: `OrbitControls` (drag to look, scroll to zoom) with a low, moody
-  default framing. Scripted "fly to grave" camera tweens when a task is selected.
-  WASD walk mode is explicitly deferred (stretch, post-M5 only).
-- **Hover**: raycast to highlight grave + show epitaph plaque.
+  default framing. _Deferred:_ scripted "fly to grave" camera tweens; WASD walk mode.
+- **Hover**: raycast highlights the grave and forces its label card (the epitaph
+  plaque: title, due date, priority) visible and on top.
 - **Select**: click grave → open detail panel.
-- **Complete gesture**: drag the floating candle onto a grave, or click "Lay to rest".
-- **Add**: "+ Dig a Grave" button → quick-add form → headstone rises.
+- **Complete gesture**: click "Lay to rest". _Deferred:_ drag-a-candle gesture.
+- **Add**: "+ Add Task" → quick-add form → headstone rises.
 - **Toggle views**: switch between the 3D graveyard and the 2D parchment ledger.
+- **Settings / About**: sidebar dialogs for quality, motion, sound, show-completed,
+  and a legend explaining what every spooky element means.
 
 ## 8. Accessibility & Fallback
 
 - **2D Ledger view**: parchment-styled, fully keyboard-accessible task table with all
   CRUD/filter/search — the canonical functional surface.
 - `prefers-reduced-motion`: disable rising/sinking/particle animations; instant changes.
+  The user can override the OS setting either way (Settings → Motion).
 - WebGL unavailable → auto-load the Ledger view with a tasteful static backdrop.
 - Screen-reader labels for all controls; focus management for panels/modals.
 
