@@ -11,10 +11,11 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 /** Overdue count at which the blood moon rises (Requirement 5.3). */
 export const BLOOD_MOON_THRESHOLD = 3;
 
-/** Fog density bounds (Requirement 5.2). */
+/** Fog density bounds (Requirement 5.2). Capped so the far side of a full
+ *  (~100-grave) yard still reads through the haze instead of vanishing. */
 export const FOG_MIN = 0.02;
-export const FOG_MAX = 0.085;
-export const FOG_PER_OVERDUE = 0.008;
+export const FOG_MAX = 0.045;
+export const FOG_PER_OVERDUE = 0.004;
 
 function clamp01(v: number): number {
   return Math.min(1, Math.max(0, v));

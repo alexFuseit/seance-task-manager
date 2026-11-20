@@ -8,6 +8,7 @@
  * (grave-reconciler.ts) owns the store subscription and mutates this scene.
  */
 import * as THREE from 'three';
+import { MapControls } from 'three/examples/jsm/controls/MapControls.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { type RenderConfig } from './quality';
 import { createPostFx, type PostFx } from './postfx';
@@ -152,6 +153,8 @@ export interface SceneHandle {
   config: RenderConfig;
   /** apply a new render config at runtime (quality switch). */
   applyConfig: (cfg: RenderConfig) => void;
+  /** ground rectangle the camera target may roam within (the yard extent). */
+  setBounds: (b: { minX: number; maxX: number; minZ: number; maxZ: number }) => void;
   /** request a few active frames (e.g. after a store change or animation). */
   wake: () => void;
   /**
@@ -199,15 +202,44 @@ export function createScene(container: HTMLElement, initialConfig: RenderConfig)
   container.appendChild(renderer.domElement);
   renderer.domElement.setAttribute('aria-hidden', 'true');
 
-  const controls = new OrbitControls(camera, renderer.domElement);
+  // Map-style navigation: left-drag pans across the ground (so every grave in
+  // a large yard is reachable), right-drag orbits, scroll zooms toward the
+  // cursor. Touch: one finger pans, two fingers rotate/zoom.
+  const controls = new MapControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
   controls.maxPolarAngle = Math.PI * 0.49; // don't go below the ground
   controls.minDistance = 4;
   controls.maxDistance = 60;
-  controls.enablePan = true; // let the user drag across the graveyard field
+  controls.zoomToCursor = true;
   controls.screenSpacePanning = false; // pan along the ground, not the screen
   controls.target.set(0, 1, -4);
+
+  // Keep the target inside the yard; the camera is shifted by the same amount
+  // so clamping never changes the view angle. Default bounds until the
+  // reconciler reports the real yard size.
+  const bounds = { minX: -12, maxX: 12, minZ: -16, maxZ: 4 };
+  function clampTarget(): void {
+    const t = controls.target;
+    const cx = Math.min(bounds.maxX, Math.max(bounds.minX, t.x));
+    const cz = Math.min(bounds.maxZ, Math.max(bounds.minZ, t.z));
+    const dx = cx - t.x;
+    const dz = cz - t.z;
+    if (dx !== 0 || dz !== 0) {
+      t.x = cx;
+      t.z = cz;
+      camera.position.x += dx;
+      camera.position.z += dz;
+    }
+    t.y = 1; // zoom-to-cursor can drift the target vertically; keep it on the yard
+  }
+  function setBounds(b: { minX: number; maxX: number; minZ: number; maxZ: number }): void {
+    bounds.minX = b.minX;
+    bounds.maxX = b.maxX;
+    bounds.minZ = b.minZ;
+    bounds.maxZ = b.maxZ;
+    clampTarget();
+  }
 
   // --- lighting ---
   const moonLight = new THREE.DirectionalLight(0xbcd4f0, 1.9);
@@ -222,6 +254,17 @@ export function createScene(container: HTMLElement, initialConfig: RenderConfig)
   moonLight.shadow.camera.top = d;
   moonLight.shadow.camera.bottom = -d;
   scene.add(moonLight);
+  scene.add(moonLight.target);
+  // The shadow frustum (±25) follows the view so far graves still get shadows.
+  const MOON_OFFSET_X = -6;
+  const MOON_OFFSET_Y = 12;
+  const MOON_OFFSET_Z = 4;
+  function followTarget(): void {
+    const t = controls.target;
+    moonLight.target.position.set(t.x, 0, t.z);
+    moonLight.position.set(t.x + MOON_OFFSET_X, MOON_OFFSET_Y, t.z + MOON_OFFSET_Z);
+  }
+  followTarget();
 
   // Warm amber rim/accent light from the opposite side — the complementary
   // temperature split that keeps a cold night scene from reading flat. It only
@@ -317,6 +360,8 @@ export function createScene(container: HTMLElement, initialConfig: RenderConfig)
 
     const dt = clock.getDelta();
     controls.update();
+    clampTarget();
+    followTarget();
     ambientRequested = false;
     for (const cb of frameCbs) cb(dt);
     ambientActive = ambientRequested;
@@ -418,6 +463,7 @@ export function createScene(container: HTMLElement, initialConfig: RenderConfig)
       return config;
     },
     applyConfig,
+    setBounds,
     wake,
     ambient,
     isIdle: () => idle,

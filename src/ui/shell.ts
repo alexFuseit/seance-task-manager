@@ -137,7 +137,9 @@ export function mountShell(parent: HTMLElement, deps: ShellDeps): ShellHandle {
   // ---------- bottom hint + compass ----------
   const bottomHint = el('div', { class: 'bottom-hint' });
   bottomHint.append(
-    el('span', {}, ['Drag to explore']),
+    el('span', {}, ['Drag to move']),
+    el('span', {}, ['·']),
+    el('span', {}, ['Right-drag to turn']),
     el('span', {}, ['·']),
     svg(ICONS.mouse),
     el('span', {}, ['Scroll to zoom']),

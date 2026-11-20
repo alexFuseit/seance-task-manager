@@ -65,8 +65,9 @@ test('graveyard mounts a WebGL canvas with grave labels', async ({ page }) => {
 
   const canvas = page.locator('.canvas-host canvas');
   await expect(canvas).toBeVisible({ timeout: 15_000 });
-  // Seeded graves rise and their HTML cards appear.
-  await expect(page.locator('.grave-label').first()).toBeVisible({ timeout: 10_000 });
+  // Seeded graves rise and their HTML cards appear (only the nearest few are
+  // shown, so look for any visible card rather than the first in the DOM).
+  await expect(page.locator('.grave-label:visible').first()).toBeVisible({ timeout: 10_000 });
 
   // Back to the ledger.
   await page.getByRole('button', { name: /open the ledger/i }).click();

@@ -15,7 +15,7 @@ import {
   fogDensityFor,
   nightness,
 } from '../model/atmosphere';
-import { layoutPosition, signature, visualOf, PLOTS_PER_ROW } from '../three/grave-visual';
+import { layoutPosition, plotsPerRow, signature, visualOf, yardBounds, PLOTS_PER_ROW } from '../three/grave-visual';
 
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
@@ -205,5 +205,18 @@ describe('graveyard layout', () => {
       }
     }
     expect(minD).toBeGreaterThan(2);
+  });
+
+  it('yard bounds contain every plot', () => {
+    for (const n of [1, 7, 100]) {
+      const b = yardBounds(n, 0.7); // just above the ±0.6 jitter
+      for (let i = 0; i < n; i++) {
+        const p = layoutPosition(i, plotsPerRow(n));
+        expect(p.x).toBeGreaterThanOrEqual(b.minX);
+        expect(p.x).toBeLessThanOrEqual(b.maxX);
+        expect(p.z).toBeGreaterThanOrEqual(b.minZ);
+        expect(p.z).toBeLessThanOrEqual(b.maxZ);
+      }
+    }
   });
 });

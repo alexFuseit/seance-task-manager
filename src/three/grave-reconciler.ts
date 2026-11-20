@@ -31,7 +31,7 @@ import {
   setDecorationsEnabled,
   tickGrave,
 } from './grave';
-import { layoutPosition, signature, visualOf } from './grave-visual';
+import { layoutPosition, plotsPerRow, signature, visualOf, yardBounds } from './grave-visual';
 import { createLabelLayer, type LabelAnchor, type LabelLayer } from './labels';
 import { createSkeletons, type Haunt, type Skeletons } from './skeletons';
 import { type Effect, createGhost, createDustBurst } from './effects';
@@ -151,12 +151,13 @@ export function createReconciler(
     const now = Date.now();
     const seen = new Set<string>();
     const haunts: Haunt[] = [];
+    const perRow = plotsPerRow(tasks.length);
 
     tasks.forEach((task, index) => {
       seen.add(task.id);
       const visual = visualOf(task, search, now);
       const sig = signature(visual);
-      const pos = layoutPosition(index);
+      const pos = layoutPosition(index, perRow);
       labels.upsert(task.id, task);
       if (visual.due === 'overdue' && task.status === 'active') {
         haunts.push({ id: task.id, x: pos.x, z: pos.z });
@@ -218,6 +219,7 @@ export function createReconciler(
     }
 
     skeletons.setHaunts(haunts);
+    scene.setBounds(yardBounds(tasks.length));
     scene.wake();
   }
 
