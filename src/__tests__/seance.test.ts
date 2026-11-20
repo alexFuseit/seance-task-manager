@@ -10,7 +10,7 @@ import {
   defaultFilter,
 } from '../model/query';
 import { createSeanceStore } from '../store/task-store';
-import { seedIfEmpty } from '../store/seed';
+import { SEED_COUNT, seedIfEmpty } from '../store/seed';
 import { configForQuality } from '../three/quality';
 import { emptyState, type Task } from '../model/types';
 
@@ -217,7 +217,8 @@ describe('seedIfEmpty', () => {
     const store = createSeanceStore(emptyState());
     seedIfEmpty(store);
     const tasks = store.getState().tasks;
-    expect(tasks.length).toBeGreaterThan(0);
+    expect(tasks).toHaveLength(SEED_COUNT);
+    expect(new Set(tasks.map((t) => t.title)).size).toBe(SEED_COUNT);
     // covers active + completed states for the demo
     expect(tasks.some((t) => t.status === 'active')).toBe(true);
     expect(tasks.some((t) => t.status === 'completed')).toBe(true);

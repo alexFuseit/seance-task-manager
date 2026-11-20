@@ -7,11 +7,23 @@ import './styles/fonts.css';
 import './styles/main.css';
 import { createSeanceStore } from './store/task-store';
 import { seedIfEmpty } from './store/seed';
+import { STORAGE_KEY } from './model/types';
 import { mountApp } from './ui/app';
 
 const root = document.querySelector<HTMLDivElement>('#app');
 if (!root) {
   throw new Error('Missing #app root element');
+}
+
+// Dev-only: `?reseed` wipes the saved graveyard so the sample seed is applied
+// again. Stripped from production builds (import.meta.env.DEV is false).
+if (import.meta.env.DEV) {
+  const url = new URL(window.location.href);
+  if (url.searchParams.has('reseed')) {
+    localStorage.removeItem(STORAGE_KEY);
+    url.searchParams.delete('reseed');
+    history.replaceState(null, '', url);
+  }
 }
 
 const store = createSeanceStore();
