@@ -25,6 +25,10 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { type Priority } from '../model/types';
 import { type GraveVisual } from './grave-visual';
+import { animateFlight, animatePerched, buildCrow, disposeCrowResources } from './crow';
+
+/** Perched crow's feet sit this far below its origin. */
+const CROW_PERCH_Y = 0.16;
 
 export type { GraveVisual } from './grave-visual';
 
@@ -100,12 +104,6 @@ interface SharedResources {
   crackSoon: THREE.MeshBasicMaterial;
   crackOverdue: THREE.MeshBasicMaterial;
   mound: THREE.BufferGeometry;
-  crowBody: THREE.BufferGeometry;
-  crowHead: THREE.BufferGeometry;
-  crowBeak: THREE.BufferGeometry;
-  crowWing: THREE.BufferGeometry;
-  crowMat: THREE.MeshStandardMaterial;
-  beakMat: THREE.MeshStandardMaterial;
   spirit: THREE.BufferGeometry;
 }
 
@@ -138,12 +136,6 @@ function res(): SharedResources {
       depthWrite: false,
     }),
     mound,
-    crowBody: new THREE.ConeGeometry(0.12, 0.42, 6),
-    crowHead: new THREE.SphereGeometry(0.1, 8, 6),
-    crowBeak: new THREE.ConeGeometry(0.03, 0.12, 4),
-    crowWing: new THREE.BoxGeometry(0.18, 0.02, 0.12),
-    crowMat: new THREE.MeshStandardMaterial({ color: 0x0b0b10, roughness: 0.6 }),
-    beakMat: new THREE.MeshStandardMaterial({ color: 0x8a6a1a }),
     spirit: new THREE.CapsuleGeometry(0.22, 0.7, 4, 8),
   };
   return shared;
@@ -159,15 +151,10 @@ export function disposeSharedGraveResources(): void {
     s.cracks[p].dispose();
   }
   s.mound.dispose();
-  s.crowBody.dispose();
-  s.crowHead.dispose();
-  s.crowBeak.dispose();
-  s.crowWing.dispose();
   s.spirit.dispose();
   s.crackSoon.dispose();
   s.crackOverdue.dispose();
-  s.crowMat.dispose();
-  s.beakMat.dispose();
+  disposeCrowResources();
 }
 
 function stoneGeometry(priority: Priority): StoneShape {
@@ -263,24 +250,30 @@ function taperBox(geo: THREE.BufferGeometry, h: number, topScale: number): void 
 // Decorations (lazy)
 // ---------------------------------------------------------------------------
 
-/** A tiny low-poly crow (body + head + beak + wings) built from shared parts. */
-function buildCrow(): THREE.Group {
-  const r = res();
-  const g = new THREE.Group();
-  const body = new THREE.Mesh(r.crowBody, r.crowMat);
-  body.rotation.z = Math.PI / 2;
-  const head = new THREE.Mesh(r.crowHead, r.crowMat);
-  head.position.set(0.22, 0.05, 0);
-  const beak = new THREE.Mesh(r.crowBeak, r.beakMat);
-  beak.rotation.z = -Math.PI / 2;
-  beak.position.set(0.34, 0.05, 0);
-  const wingL = new THREE.Mesh(r.crowWing, r.crowMat);
-  wingL.position.set(0, 0.04, 0.1);
-  const wingR = new THREE.Mesh(r.crowWing, r.crowMat);
-  wingR.position.set(0, 0.04, -0.1);
-  g.add(body, head, beak, wingL, wingR);
-  g.userData.wings = [wingL, wingR];
-  return g;
+/** A perched crow (from crow.ts) built from shared resources. */
+function ensureCrow(parts: GraveParts): THREE.Group {
+  if (!parts.crow) {
+    parts.crow = buildCrow(true, parts.phase);
+    parts.crow.scale.setScalar(1.05);
+    parts.crow.rotation.y = parts.phase; // face a random-but-stable direction
+    parts.crow.position.set(0, parts.height + CROW_PERCH_Y, 0);
+    parts.group.add(parts.crow);
+  }
+  return parts.crow;
+}
+
+function ensureFlock(parts: GraveParts): THREE.Group {
+  if (!parts.crowFlock) {
+    parts.crowFlock = new THREE.Group();
+    for (let i = 0; i < 3; i++) {
+      const c = buildCrow(false, parts.phase + i * 2.1);
+      c.rotation.order = 'YXZ'; // yaw (heading), then roll (bank)
+      c.scale.setScalar(0.9);
+      parts.crowFlock.add(c);
+    }
+    parts.group.add(parts.crowFlock);
+  }
+  return parts.crowFlock;
 }
 
 /** A translucent pacing spirit (a tapered wisp). Material is per-grave. */
@@ -296,29 +289,6 @@ function buildSpirit(): THREE.Mesh {
   const mesh = new THREE.Mesh(res().spirit, mat);
   mesh.position.y = 0.7;
   return mesh;
-}
-
-function ensureCrow(parts: GraveParts): THREE.Group {
-  if (!parts.crow) {
-    parts.crow = buildCrow();
-    parts.crow.scale.setScalar(0.9);
-    parts.crow.position.set(0, parts.height + 0.15, 0);
-    parts.group.add(parts.crow);
-  }
-  return parts.crow;
-}
-
-function ensureFlock(parts: GraveParts): THREE.Group {
-  if (!parts.crowFlock) {
-    parts.crowFlock = new THREE.Group();
-    for (let i = 0; i < 3; i++) {
-      const c = buildCrow();
-      c.scale.setScalar(0.7);
-      parts.crowFlock.add(c);
-    }
-    parts.group.add(parts.crowFlock);
-  }
-  return parts.crowFlock;
 }
 
 function ensureSpirit(parts: GraveParts): THREE.Mesh {
@@ -357,7 +327,7 @@ function setSilhouette(parts: GraveParts, priority: Priority): void {
   parts.stoneMesh.geometry = geo;
   parts.crack.geometry = r.cracks[priority];
   parts.crack.position.set(0.08, height * 0.5, 0.085);
-  if (parts.crow) parts.crow.position.y = height + 0.15;
+  if (parts.crow) parts.crow.position.y = height + CROW_PERCH_Y;
 }
 
 export function buildGrave(visual: GraveVisual): GraveParts {
@@ -507,40 +477,30 @@ export function tickGrave(parts: GraveParts, dt: number, time: number): Tick {
 
   let ambient = false;
 
-  // Crow bobbing when visible (due soon).
+  // Due soon: the perched crow ruffles its wings and glances around.
   const crow = parts.crow;
   if (crow && crow.visible) {
-    const bob = Math.sin(time * 2 + parts.phase) * 0.04;
-    crow.position.y = parts.height + 0.15 + bob;
-    const wings = crow.userData.wings as THREE.Mesh[] | undefined;
-    if (wings) {
-      const flap = Math.sin(time * 3 + parts.phase) * 0.15;
-      wings[0]!.rotation.x = flap;
-      wings[1]!.rotation.x = -flap;
-    }
+    crow.position.y = parts.height + CROW_PERCH_Y;
+    animatePerched(crow, time, dt);
     ambient = true;
   }
 
-  // Overdue: circling crow flock + pacing glowing spirit.
+  // Overdue: a banking, flapping flock circling the grave + pacing spirit.
   const flock = parts.crowFlock;
   if (flock && flock.visible) {
     const r = 1.4;
     const kids = flock.children;
     for (let i = 0; i < kids.length; i++) {
-      const c = kids[i]!;
+      const c = kids[i] as THREE.Group;
       const a = time * 0.9 + (i * Math.PI * 2) / 3 + parts.phase;
       c.position.set(
         Math.cos(a) * r,
         parts.height + 0.8 + Math.sin(time + i) * 0.15,
         Math.sin(a) * r,
       );
-      c.rotation.y = -a + Math.PI / 2;
-      const wings = c.userData.wings as THREE.Mesh[] | undefined;
-      if (wings) {
-        const flap = Math.sin(time * 8 + i) * 0.5;
-        wings[0]!.rotation.x = flap;
-        wings[1]!.rotation.x = -flap;
-      }
+      c.rotation.y = -a - Math.PI / 2; // face along the circle
+      c.rotation.x = 0.35; // bank into the turn
+      animateFlight(c, time);
     }
     ambient = true;
   }
