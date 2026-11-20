@@ -6,6 +6,7 @@
  * call update(dt) each frame, and remove+dispose when done() returns true.
  */
 import * as THREE from 'three';
+import { createGhostMaterial, ghostGeometry, ghostUniforms } from './ghost';
 
 export interface Effect {
   object: THREE.Object3D;
@@ -19,49 +20,114 @@ export interface Effect {
  * fog — the climax of "laying to rest" (Signature Moment 1).
  */
 export function createGhost(origin: THREE.Vector3): Effect {
-  const group = new THREE.Group();
-  group.position.copy(origin);
+  // Root stays at the grave; the ghost body rises inside it while ectoplasm
+  // motes are shed in root-local space so they trail behind, not follow.
+  const root = new THREE.Group();
+  root.position.copy(origin);
 
-  const mat = new THREE.MeshStandardMaterial({
-    color: 0xcfeef2,
-    emissive: new THREE.Color(0x8fd4dc),
-    emissiveIntensity: 0.9,
-    transparent: true,
-    opacity: 0,
-    depthWrite: false,
+  const mat = createGhostMaterial({
+    color: 0xb8e6ee,
+    rim: 0xd8fbff,
+    rimIntensity: 1.8,
+    phase: Math.random() * Math.PI * 2,
   });
+  const u = ghostUniforms(mat);
+  const ghost = new THREE.Mesh(ghostGeometry(), mat);
+  ghost.renderOrder = 2;
+  root.add(ghost);
 
-  // Body: a tapered sheeted wisp (cone) with a rounded head.
-  const body = new THREE.Mesh(new THREE.ConeGeometry(0.35, 1.1, 10, 1, true), mat);
-  body.position.y = 0.55;
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.32, 12, 10), mat);
-  head.position.y = 1.15;
-  // Two little void eyes so it reads as a face on video.
-  const eyeMat = new THREE.MeshBasicMaterial({ color: 0x15303a, transparent: true, opacity: 0 });
-  const eyeGeo = new THREE.SphereGeometry(0.05, 8, 6);
-  const eyeL = new THREE.Mesh(eyeGeo, eyeMat);
-  const eyeR = new THREE.Mesh(eyeGeo, eyeMat);
-  eyeL.position.set(-0.11, 1.18, 0.28);
-  eyeR.position.set(0.11, 1.18, 0.28);
-
-  group.add(body, head, eyeL, eyeR);
+  // --- ectoplasm motes (preallocated; no per-frame allocation) ---
+  const MOTES = 28;
+  const MOTE_LIFE = 1.4;
+  const pos = new Float32Array(MOTES * 3);
+  const alphaAttr = new Float32Array(MOTES);
+  const vel = new Float32Array(MOTES * 3);
+  const age = new Float32Array(MOTES).fill(MOTE_LIFE); // start "dead"
+  const moteGeo = new THREE.BufferGeometry();
+  moteGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  moteGeo.setAttribute('alpha', new THREE.BufferAttribute(alphaAttr, 1));
+  const moteMat = new THREE.ShaderMaterial({
+    uniforms: { uColor: { value: new THREE.Color(0xd8fbff).multiplyScalar(1.6) } },
+    vertexShader: /* glsl */ `
+      attribute float alpha;
+      varying float vAlpha;
+      void main() {
+        vAlpha = alpha;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = 60.0 / max(0.1, -mv.z);
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: /* glsl */ `
+      uniform vec3 uColor;
+      varying float vAlpha;
+      void main() {
+        float d = length(gl_PointCoord - 0.5);
+        float a = (1.0 - smoothstep(0.0, 0.5, d)) * vAlpha;
+        gl_FragColor = vec4(uColor, a);
+        #include <colorspace_fragment>
+      }`,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+  const motes = new THREE.Points(moteGeo, moteMat);
+  motes.frustumCulled = false;
+  root.add(motes);
 
   let t = 0;
-  const LIFE = 2.6;
+  let spawnAcc = 0;
+  let nextMote = 0;
+  const LIFE = 2.8;
 
   function update(dt: number): void {
     t += dt;
     const p = Math.min(1, t / LIFE);
     // ease: quick fade-in, long fade-out
-    const alpha = p < 0.25 ? p / 0.25 : 1 - (p - 0.25) / 0.75;
-    mat.opacity = Math.max(0, alpha) * 0.85;
-    eyeMat.opacity = mat.opacity;
-    // rise and sway
-    group.position.y = origin.y + p * 3.2;
-    group.position.x = origin.x + Math.sin(t * 2) * 0.25;
-    group.rotation.y = t * 0.8;
-    const s = 1 + p * 0.5;
-    group.scale.setScalar(s);
+    const alpha = p < 0.2 ? p / 0.2 : 1 - (p - 0.2) / 0.8;
+    u.uOpacity.value = Math.max(0, alpha) * 0.9;
+    u.uTime.value = t;
+
+    // Rise with an ease-out, swaying; the tail trails the sway velocity.
+    const rise = 1 - (1 - p) * (1 - p);
+    ghost.position.y = rise * 3.4;
+    ghost.position.x = Math.sin(t * 2) * 0.25;
+    u.uSway.value = Math.cos(t * 2) * 0.8 + 0.2;
+    // Keep the face mostly toward the viewer: oscillate instead of spinning.
+    ghost.rotation.y = Math.sin(t * 1.3) * 0.45;
+    ghost.rotation.z = -Math.cos(t * 2) * 0.08; // lean into the sway
+    ghost.scale.setScalar(0.9 + p * 0.45);
+
+    // Shed motes from the hem while the ghost is still visible.
+    if (p < 0.75) {
+      spawnAcc += dt * 22;
+      while (spawnAcc >= 1) {
+        spawnAcc -= 1;
+        const i = nextMote;
+        nextMote = (nextMote + 1) % MOTES;
+        const a = Math.random() * Math.PI * 2;
+        const r = 0.15 + Math.random() * 0.3;
+        pos[i * 3] = ghost.position.x + Math.cos(a) * r;
+        pos[i * 3 + 1] = ghost.position.y + Math.random() * 0.4;
+        pos[i * 3 + 2] = ghost.position.z + Math.sin(a) * r;
+        vel[i * 3] = (Math.random() - 0.5) * 0.3;
+        vel[i * 3 + 1] = 0.3 + Math.random() * 0.5;
+        vel[i * 3 + 2] = (Math.random() - 0.5) * 0.3;
+        age[i] = 0;
+      }
+    }
+    for (let i = 0; i < MOTES; i++) {
+      if (age[i]! >= MOTE_LIFE) {
+        alphaAttr[i] = 0;
+        continue;
+      }
+      age[i]! += dt;
+      pos[i * 3]! += vel[i * 3]! * dt;
+      pos[i * 3 + 1]! += vel[i * 3 + 1]! * dt;
+      pos[i * 3 + 2]! += vel[i * 3 + 2]! * dt;
+      alphaAttr[i] = Math.max(0, 1 - age[i]! / MOTE_LIFE) * 0.5;
+    }
+    moteGeo.attributes.position!.needsUpdate = true;
+    moteGeo.attributes.alpha!.needsUpdate = true;
   }
 
   function done(): boolean {
@@ -69,15 +135,13 @@ export function createGhost(origin: THREE.Vector3): Effect {
   }
 
   function dispose(): void {
-    group.traverse((o) => {
-      if (o instanceof THREE.Mesh) {
-        o.geometry.dispose();
-        (o.material as THREE.Material).dispose();
-      }
-    });
+    // ghost geometry is shared (ghost.ts) — only free per-effect resources.
+    mat.dispose();
+    moteGeo.dispose();
+    moteMat.dispose();
   }
 
-  return { object: group, update, done, dispose };
+  return { object: root, update, done, dispose };
 }
 
 /**

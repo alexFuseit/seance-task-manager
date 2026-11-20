@@ -26,9 +26,12 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { type Priority } from '../model/types';
 import { type GraveVisual } from './grave-visual';
 import { animateFlight, animatePerched, buildCrow, disposeCrowResources } from './crow';
+import { createGhostMaterial, disposeGhostResources, ghostGeometry, ghostUniforms } from './ghost';
 
 /** Perched crow's feet sit this far below its origin. */
 const CROW_PERCH_Y = 0.16;
+/** Hover height of the pacing spirit's hem above the soil. */
+const SPIRIT_Y = 0.12;
 
 export type { GraveVisual } from './grave-visual';
 
@@ -104,7 +107,6 @@ interface SharedResources {
   crackSoon: THREE.MeshBasicMaterial;
   crackOverdue: THREE.MeshBasicMaterial;
   mound: THREE.BufferGeometry;
-  spirit: THREE.BufferGeometry;
 }
 
 let shared: SharedResources | null = null;
@@ -136,7 +138,6 @@ function res(): SharedResources {
       depthWrite: false,
     }),
     mound,
-    spirit: new THREE.CapsuleGeometry(0.22, 0.7, 4, 8),
   };
   return shared;
 }
@@ -151,10 +152,10 @@ export function disposeSharedGraveResources(): void {
     s.cracks[p].dispose();
   }
   s.mound.dispose();
-  s.spirit.dispose();
   s.crackSoon.dispose();
   s.crackOverdue.dispose();
   disposeCrowResources();
+  disposeGhostResources();
 }
 
 function stoneGeometry(priority: Priority): StoneShape {
@@ -276,24 +277,24 @@ function ensureFlock(parts: GraveParts): THREE.Group {
   return parts.crowFlock;
 }
 
-/** A translucent pacing spirit (a tapered wisp). Material is per-grave. */
-function buildSpirit(): THREE.Mesh {
-  const mat = new THREE.MeshStandardMaterial({
-    color: 0xbfe9ef,
-    emissive: new THREE.Color(0x6fb9c4),
-    emissiveIntensity: 0.8,
-    transparent: true,
-    opacity: 0.0,
-    depthWrite: false,
+/** A translucent pacing spirit (shared ghost geometry). Material is per-grave. */
+function buildSpirit(phase: number): THREE.Mesh {
+  const mat = createGhostMaterial({
+    color: 0x9fd6df,
+    rim: 0xbff4fb,
+    rimIntensity: 1.4,
+    phase,
   });
-  const mesh = new THREE.Mesh(res().spirit, mat);
-  mesh.position.y = 0.7;
+  const mesh = new THREE.Mesh(ghostGeometry(), mat);
+  mesh.scale.setScalar(0.85);
+  mesh.position.set(0, SPIRIT_Y, 0.55); // in front of the stone
+  mesh.renderOrder = 2;
   return mesh;
 }
 
 function ensureSpirit(parts: GraveParts): THREE.Mesh {
   if (!parts.spirit) {
-    parts.spirit = buildSpirit();
+    parts.spirit = buildSpirit(parts.phase);
     parts.group.add(parts.spirit);
   }
   return parts.spirit;
@@ -506,11 +507,18 @@ export function tickGrave(parts: GraveParts, dt: number, time: number): Tick {
   }
   const spirit = parts.spirit;
   if (spirit && spirit.visible) {
-    const sm = spirit.material as THREE.MeshStandardMaterial;
-    sm.opacity = 0.35 + Math.sin(time * 1.5 + parts.phase) * 0.12;
-    // pace left-right beside the grave
-    spirit.position.x = Math.sin(time * 0.8 + parts.phase) * 0.9;
-    spirit.position.y = 0.7 + Math.sin(time * 2) * 0.05;
+    const su = ghostUniforms(spirit.material as THREE.ShaderMaterial);
+    const a = time * 0.8 + parts.phase;
+    su.uTime.value = time;
+    su.uOpacity.value = 0.6 + Math.sin(time * 1.5 + parts.phase) * 0.15;
+    // pace left-right in front of the grave; the tail trails the motion and
+    // the body turns/leans toward where it's heading.
+    const vel = Math.cos(a);
+    spirit.position.x = Math.sin(a) * 0.9;
+    spirit.position.y = SPIRIT_Y + Math.sin(time * 2 + parts.phase) * 0.06;
+    su.uSway.value = vel;
+    spirit.rotation.y = vel * 0.5;
+    spirit.rotation.z = -vel * 0.1;
     ambient = true;
   }
 
