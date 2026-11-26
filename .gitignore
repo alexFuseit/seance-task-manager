@@ -20,6 +20,7 @@ pnpm-debug.log*
 
 # Playwright dev-only screenshot output (the shoot.mjs script is kept)
 scripts/shots/
+scripts/demo/out/
 test-results/
 playwright-report/
 

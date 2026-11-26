@@ -198,6 +198,14 @@ export function mountApp(parent: HTMLElement, store: SeanceStore): () => void {
 
   void setView('ledger');
 
+  // Dev-only: scripted demo-capture hook (scripts/demo/). Tree-shaken from
+  // production builds because import.meta.env.DEV is statically false there.
+  if (import.meta.env.DEV) {
+    void import('../dev/demo-hook').then(({ installDemoHook }) =>
+      installDemoHook(store, setView, () => scene),
+    );
+  }
+
   return function dispose(): void {
     for (const c of cleanups) c();
     reconciler?.dispose();

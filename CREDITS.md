@@ -55,6 +55,7 @@ Bundled into `dist/` by Vite (Latin subset only); no font CDN is contacted at ru
 - Procedural grave geometry, crows, spirits, ghosts, skeletons — © Séance contributors (MIT).
 - Gradient sky + procedural starfield shader, vignette shader — © Séance contributors (MIT).
 - Synthesized ambient audio — © Séance contributors (MIT).
+- Demo-video soundtrack (`scripts/demo/soundtrack.mjs`) — fully self-synthesized with ffmpeg (lavfi sources/filters only); no third-party audio. © Séance contributors (MIT).
 - Inline SVG icons (ghost, grave, pentagram, etc.) — © Séance contributors (MIT).
 
 ## AI-generated assets

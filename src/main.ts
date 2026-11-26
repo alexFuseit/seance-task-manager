@@ -16,7 +16,9 @@ if (!root) {
 }
 
 // Dev-only: `?reseed` wipes the saved graveyard so the sample seed is applied
-// again. Stripped from production builds (import.meta.env.DEV is false).
+// again; `?demo` starts from an empty store with no seed (the scripted video
+// capture builds its own yard). Stripped from production builds.
+let skipSeed = false;
 if (import.meta.env.DEV) {
   const url = new URL(window.location.href);
   if (url.searchParams.has('reseed')) {
@@ -24,13 +26,17 @@ if (import.meta.env.DEV) {
     url.searchParams.delete('reseed');
     history.replaceState(null, '', url);
   }
+  if (url.searchParams.has('demo')) {
+    localStorage.removeItem(STORAGE_KEY);
+    skipSeed = true;
+  }
 }
 
 const store = createSeanceStore();
 
 // Populate a fresh graveyard so first-time visitors immediately see the full
 // range of visual states (weathering, crows, spirit). No-op for returning users.
-seedIfEmpty(store);
+if (!skipSeed) seedIfEmpty(store);
 
 // Track the OS reduced-motion preference. The user's explicit choice
 // (Settings → Motion) overrides it; 'system' follows it live.
