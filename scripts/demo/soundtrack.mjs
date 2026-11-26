@@ -116,12 +116,12 @@ function windBed(bed) {
   const vol = `(1-0.5*min(1,${duck}))*(0.7+0.3*sin(${TWO_PI}*${T}/9))`;
   const chan = (i, seed) =>
     `[${i}:a]asplit=2[a${i}][b${i}];` +
-    `[a${i}]bandpass=f=420:width_type=h:w=300,tremolo=f=0.11:d=0.7[x${i}];` +
-    `[b${i}]bandpass=f=950:width_type=h:w=500,tremolo=f=0.1:d=0.8[y${i}];` +
+    `[a${i}]bandpass=f=260:width_type=h:w=180,tremolo=f=0.11:d=0.7[x${i}];` +
+    `[b${i}]bandpass=f=520:width_type=h:w=280,tremolo=f=0.1:d=0.8[y${i}];` +
     `[x${i}][y${i}]amix=inputs=2:normalize=0[w${i}]`;
   const graph = [
     chan(0), chan(1),
-    `[w0][w1]join=inputs=2:channel_layout=stereo,highpass=f=120,` +
+    `[w0][w1]join=inputs=2:channel_layout=stereo,highpass=f=80,` +
       `volume='${vol}':eval=frame:precision=float,volume=7,` +
       `afade=t=in:d=2.5,afade=t=out:st=${f(dur - 2.5)}:d=2.5[out]`,
   ].join(';');
@@ -136,7 +136,7 @@ function windBed(bed) {
       ],
       graph, dur,
     ),
-    gain: 0.8,
+    gain: 0.35, // was 0.8 — wind was too prominent
   };
 }
 
